@@ -1,0 +1,25 @@
+roleProviderService:
+  image: ghcr.io/pfisterer/role-provider-service
+  imagePullPolicy: Always
+  version: "latest"
+  hostname: "role-provider.example.com"
+  replicas: 1
+  port: 8085
+
+  db:
+    connectionString: "host=localhost user=postgres password=postgres
+      dbname=group_auth_service port=5432 sslmode=disable TimeZone=UTC"
+
+  api:
+    mode: "production"
+    tokens: "change-me"
+
+  serviceTimeoutSeconds: 30
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-production"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"

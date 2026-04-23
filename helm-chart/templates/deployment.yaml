@@ -1,0 +1,102 @@
+{{- $name := include "role-provider-service.fullname" . -}}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    {{- include "role-provider-service.rolloutAnnotations" . | nindent 4 }}
+    keel.sh/policy: all
+    keel.sh/trigger: poll
+    keel.sh/pollSchedule: "@every 30m"
+  labels:
+    {{- include "role-provider-service.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.roleProviderService.replicas }}
+  selector:
+    matchLabels:
+      {{- include "role-provider-service.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        {{- include "role-provider-service.rolloutAnnotations" . | nindent 8 }}
+      labels:
+        {{- include "role-provider-service.selectorLabels" . | nindent 8 }}
+    spec:
+      containers:
+        - name: role-provider-service
+          image: {{ .Values.roleProviderService.image }}:{{ .Values.roleProviderService.version }}
+          imagePullPolicy: {{ .Values.roleProviderService.imagePullPolicy | default "Always" }}
+          ports:
+            - containerPort: {{ .Values.roleProviderService.port }}
+          env:
+            # ── Database ────────────────────────────────────────────────────
+            - name: DB_CONNECTION_STRING
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $name }}
+                  key: db-connection-string
+
+            # ── Web Server / API ─────────────────────────────────────────────
+            - name: API_BIND
+              value: ":{{ .Values.roleProviderService.port }}"
+            - name: API_MODE
+              value: {{ .Values.roleProviderService.api.mode | quote }}
+            - name: API_TOKENS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $name }}
+                  key: api-tokens
+
+            # ── Miscellaneous ────────────────────────────────────────────────
+            - name: SERVICE_TIMEOUT_SECONDS
+              value: {{ .Values.roleProviderService.serviceTimeoutSeconds | toString | quote }}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "role-provider-service.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "role-provider-service.selectorLabels" . | nindent 4 }}
+  ports:
+    - protocol: TCP
+      port: {{ .Values.roleProviderService.port }}
+      targetPort: {{ .Values.roleProviderService.port }}
+
+{{- if .Values.ingress.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    {{- range $key, $value := .Values.ingress.annotations }}
+    {{ $key }}: {{ $value | quote }}
+    {{- end }}
+spec:
+  {{- if .Values.ingress.className }}
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.roleProviderService.hostname | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $name }}
+                port:
+                  number: {{ .Values.roleProviderService.port }}
+  tls:
+    - hosts:
+        - {{ .Values.roleProviderService.hostname | quote }}
+      secretName: {{ $name }}-tls
+{{- end }}
