@@ -2,8 +2,8 @@ apiVersion: v2
 name: role-provider-service
 description: Zanzibar-based group and authorization service
 type: application
-version: 0.0.1-alpha
-appVersion: "0.0.1-alpha"
+version: 0.4.0-alpha
+appVersion: "0.4.0-alpha"
 maintainers:
   - name: Dennis Pfisterer
     email: dennis.pfisterer@dhbw.de
