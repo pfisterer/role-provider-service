@@ -16,7 +16,7 @@ DOCKER_PLATFORMS ?= linux/amd64,linux/arm64
 .DEFAULT_GOAL := all
 
 .PHONY: all build clean doc check-swag generate-docs run dev test tidy lint help \
-        docker-build docker-run docker-multi-arch-build
+        docker-build docker-run docker-multi-arch-build helm-update
 
 all: generate-docs build
 
@@ -31,6 +31,8 @@ generate-docs: check-swag
 	@echo "📚 Generating swagger.json..."
 	@mkdir -p $(DOC_DIR)
 	@set -e; swag init -g doc.go --dir $(SRC_DIR),./internal/webserver,./internal/common -o $(DOC_DIR) --outputTypes json
+	@echo "🧩 Copying VERSION file to $(DOC_DIR)..."
+	@cp VERSION $(DOC_DIR)/VERSION
 	@echo "🧩 Writing $(EMBED_FILE)..."
 	@printf '%s\n' \
 		'package generated_docs' \
@@ -39,6 +41,8 @@ generate-docs: check-swag
 		'' \
 		'//go:embed swagger.json' \
 		'var SwaggerJSON string' \
+		'//go:embed VERSION' \
+		'var Version string' \
 		> $(EMBED_FILE)
 	@echo "✅ Docs generated in $(DOC_DIR)/"
 
@@ -88,7 +92,7 @@ docker-build: generate-docs
 docker-run: docker-build
 	docker run --rm -p 8085:8085 --env-file .env "$(DOCKER_REPO):$(DOCKER_TAG)"
 
-docker-multi-arch-build:
+docker-multi-arch-build: helm-update
 	@echo "🏗️ Building multi-arch image for $(DOCKER_PLATFORMS)..."
 	docker buildx build \
 		--progress plain \
@@ -100,6 +104,15 @@ docker-multi-arch-build:
 	@echo "✅ $(DOCKER_REPO):$(DOCKER_TAG) pushed"
 
 # ── Maintenance ───────────────────────────────────────────────────────────────
+
+# Update helm chart version from VERSION file
+helm-update:
+	helm lint helm-chart/
+	@echo "✅ Helm chart linted successfully."
+	@VERSION=$$(cat VERSION | tr -d '\n'); \
+	sed -i '' "s/^version: .*/version: $$VERSION/" helm-chart/Chart.yaml; \
+	sed -i '' "s/^appVersion: .*/appVersion: \"$$VERSION\"/" helm-chart/Chart.yaml; \
+	echo "✅ Updated helm-chart/Chart.yaml to version $$VERSION"
 
 clean:
 	@echo "🧹 Cleaning..."
@@ -131,3 +144,4 @@ help:
 	@echo "  docker-build     → Build Docker image"
 	@echo "  docker-run       → Build and run Docker container"
 	@echo "  docker-multi-arch-build → Build and push multi-arch image"
+	@echo "  helm-update      → Lint and update Helm chart version from VERSION file"
