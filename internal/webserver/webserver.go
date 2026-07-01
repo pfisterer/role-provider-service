@@ -58,7 +58,7 @@ func SetupRouter(cfg SetupConfig) *gin.Engine {
 	})
 	router.GET("/", func(c *gin.Context) {
 		c.Header("Content-Type", "text/html; charset=utf-8")
-		c.String(http.StatusOK, swaggerUIHTML)
+		c.String(http.StatusOK, strings.ReplaceAll(swaggerUIHTML, "__VERSION__", generated_docs.Version))
 	})
 
 	// CORS.
@@ -91,6 +91,8 @@ const swaggerUIHTML = `<!DOCTYPE html>
   <script>
     SwaggerUIBundle({ url: "/swagger.json", dom_id: '#swagger-ui', presets: [SwaggerUIBundle.presets.apis, SwaggerUIBundle.SwaggerUIStandalonePreset] })
   </script>
+  <!-- __VERSION__ is replaced with the app version at serve time -->
+  <footer style="position:fixed;bottom:6px;right:10px;font:12px system-ui,sans-serif;color:#888;background:rgba(255,255,255,.75);padding:2px 6px;border-radius:4px;z-index:2147483647">v__VERSION__</footer>
 </body>
 </html>`
 
