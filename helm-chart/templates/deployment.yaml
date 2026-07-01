@@ -98,5 +98,4 @@ spec:
   tls:
     - hosts:
         - {{ .Values.roleProviderService.hostname | quote }}
-      secretName: {{ $name }}-tls
 {{- end }}
