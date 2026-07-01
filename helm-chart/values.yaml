@@ -6,6 +6,11 @@ roleProviderService:
   replicas: 1
   port: 8085
 
+  # Name of an existing Secret providing the keys `db-connection-string` and
+  # `api-tokens`. When set, the chart does NOT create its own Secret and the
+  # `db.connectionString` / `api.tokens` values below are ignored.
+  existingSecret: ""
+
   db:
     connectionString: "host=localhost user=postgres password=postgres
       dbname=group_auth_service port=5432 sslmode=disable TimeZone=UTC"
