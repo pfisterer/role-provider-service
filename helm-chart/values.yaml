@@ -12,6 +12,9 @@ roleProviderService:
   existingSecret: ""
 
   db:
+    # Storage backend: "memory" (default, ephemeral + mock seed) or "postgres"
+    # (persistent, uses connectionString / the existingSecret db-connection-string).
+    type: "memory"
     connectionString: "host=localhost user=postgres password=postgres
       dbname=group_auth_service port=5432 sslmode=disable TimeZone=UTC"
 

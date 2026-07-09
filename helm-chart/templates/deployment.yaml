@@ -32,6 +32,8 @@ spec:
             - containerPort: {{ .Values.roleProviderService.port }}
           env:
             # ── Database ────────────────────────────────────────────────────
+            - name: DB_TYPE
+              value: {{ .Values.roleProviderService.db.type | default "memory" | quote }}
             - name: DB_CONNECTION_STRING
               valueFrom:
                 secretKeyRef:

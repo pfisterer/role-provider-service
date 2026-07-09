@@ -23,6 +23,7 @@
           "additionalProperties": false,
           "required": ["connectionString"],
           "properties": {
+            "type": { "type": "string", "enum": ["memory", "postgres"] },
             "connectionString": { "type": "string", "minLength": 1 }
           }
         },
