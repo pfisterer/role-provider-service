@@ -26,6 +26,12 @@ type AppConfiguration struct {
 	ServiceTimeoutSeconds int `json:"service_timeout_seconds"`
 	// MaxResponseLimit is the global upper bound on paginated list endpoints (default 50).
 	MaxResponseLimit int `json:"max_response_limit"`
+	// GroupCacheRefreshSeconds is the background DRIFT-BACKSTOP interval of the
+	// in-memory group search cache (default 600). The cache is refreshed
+	// event-driven — on startup, after every sync, and after manual group
+	// create/update/delete — so this ticker only guards against a missed/failed
+	// event. <= 0 disables it entirely (pure event-driven).
+	GroupCacheRefreshSeconds int `json:"group_cache_refresh_seconds"`
 }
 
 // loadAppConfiguration reads config from an optional .env file and environment variables.
@@ -42,14 +48,15 @@ func loadAppConfiguration() (AppConfiguration, error) {
 	}
 
 	cfg := AppConfiguration{
-		DBType:                helper.GetEnvString("DB_TYPE", "memory"),
-		DBConnectionString:    helper.GetEnvString("DB_CONNECTION_STRING", "host=localhost user=postgres password=postgres dbname=group_auth_service port=5432 sslmode=disable TimeZone=UTC"),
-		DBAddMockData:         helper.GetEnvString("DB_ADD_MOCK_DATA", "false") == "true",
-		GinBindString:         helper.GetEnvString("API_BIND", ":5"),
-		DevMode:               helper.GetEnvString("API_MODE", "production") == "development",
-		APITokens:             tokens,
-		ServiceTimeoutSeconds: helper.GetEnvInt("SERVICE_TIMEOUT_SECONDS", 30),
-		MaxResponseLimit:      helper.GetEnvInt("MAX_RESPONSE_LIMIT", 50),
+		DBType:                   helper.GetEnvString("DB_TYPE", "memory"),
+		DBConnectionString:       helper.GetEnvString("DB_CONNECTION_STRING", "host=localhost user=postgres password=postgres dbname=group_auth_service port=5432 sslmode=disable TimeZone=UTC"),
+		DBAddMockData:            helper.GetEnvString("DB_ADD_MOCK_DATA", "false") == "true",
+		GinBindString:            helper.GetEnvString("API_BIND", ":5"),
+		DevMode:                  helper.GetEnvString("API_MODE", "production") == "development",
+		APITokens:                tokens,
+		ServiceTimeoutSeconds:    helper.GetEnvInt("SERVICE_TIMEOUT_SECONDS", 30),
+		MaxResponseLimit:         helper.GetEnvInt("MAX_RESPONSE_LIMIT", 50),
+		GroupCacheRefreshSeconds: helper.GetEnvInt("GROUP_CACHE_REFRESH_SECONDS", 600),
 	}
 
 	return cfg, nil

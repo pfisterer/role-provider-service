@@ -18,10 +18,18 @@ import (
 type Engine struct {
 	store storage.Store
 	log   *zap.SugaredLogger
+	// afterSync, if set, is called after a successful sync (e.g. to refresh the
+	// group search cache so imported groups are searchable immediately).
+	afterSync func(context.Context)
 }
 
 func NewEngine(store storage.Store, log *zap.SugaredLogger) *Engine {
 	return &Engine{store: store, log: log}
+}
+
+// SetAfterSync registers a callback invoked after each successful sync.
+func (e *Engine) SetAfterSync(fn func(context.Context)) {
+	e.afterSync = fn
 }
 
 // RunSync executes a full sync for the given source using the provided file content.
@@ -69,6 +77,11 @@ func (e *Engine) RunSync(ctx context.Context, sourceID uuid.UUID, content []byte
 	_ = e.store.UpdateSyncLog(ctx, logEntry)
 	_ = e.store.UpdateSourceSyncStatus(ctx, sourceID, common.SyncStatusOK, now)
 	e.log.Infow("sync completed", "source_id", sourceID, "added", added, "removed", removed)
+
+	// Make freshly imported groups searchable immediately (e.g. refresh the cache).
+	if e.afterSync != nil {
+		e.afterSync(ctx)
+	}
 	return nil
 }
 

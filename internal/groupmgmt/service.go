@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/pfisterer/role-provider-service/internal/catalog"
 	"github.com/pfisterer/role-provider-service/internal/common"
 	"github.com/pfisterer/role-provider-service/internal/storage"
 	"go.uber.org/zap"
@@ -26,16 +27,29 @@ var ErrInvalidToken = fmt.Errorf("invalid token: must start with '%s' or '%s'", 
 // Service handles all group and member management operations.
 type Service struct {
 	store   storage.Store
+	cache   *catalog.GroupCache
 	timeout time.Duration
 	log     *zap.SugaredLogger
 }
 
-func NewService(store storage.Store, timeout time.Duration, log *zap.SugaredLogger) *Service {
-	return &Service{store: store, timeout: timeout, log: log}
+func NewService(store storage.Store, cache *catalog.GroupCache, timeout time.Duration, log *zap.SugaredLogger) *Service {
+	return &Service{store: store, cache: cache, timeout: timeout, log: log}
 }
 
 func (s *Service) ctx(parent context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(parent, s.timeout)
+}
+
+// refreshCache best-effort reloads the group search cache after a catalog change
+// (manual group create/update/delete) so edits are searchable immediately,
+// without waiting for the background backstop refresh. Non-fatal.
+func (s *Service) refreshCache(ctx context.Context) {
+	if s.cache == nil {
+		return
+	}
+	if err := s.cache.Refresh(ctx); err != nil {
+		s.log.Warnw("group cache refresh failed", zap.Error(err))
+	}
 }
 
 // ── Groups ────────────────────────────────────────────────────────────────────
@@ -63,6 +77,7 @@ func (s *Service) CreateGroup(ctx context.Context, id, displayName, description 
 		}
 		return nil, err
 	}
+	s.refreshCache(ctx)
 	return g, nil
 }
 
@@ -84,6 +99,13 @@ func (s *Service) GetGroup(ctx context.Context, token string) (*common.Group, er
 }
 
 func (s *Service) ListGroups(ctx context.Context, query string, sourceIDStr string, limit int) ([]common.Group, error) {
+	// Group search (query, no source filter) is served from the in-memory cache
+	// so type-ahead lookups never hit the store. The source-scoped variant keeps
+	// the store's tuple-aware semantics ("groups with a tuple from this source").
+	if sourceIDStr == "" && s.cache != nil {
+		return s.cache.Search(query, limit), nil
+	}
+
 	ctx, cancel := s.ctx(ctx)
 	defer cancel()
 
@@ -109,6 +131,7 @@ func (s *Service) UpdateGroup(ctx context.Context, token, displayName, descripti
 	if err := s.store.UpdateGroup(ctx, id, displayName, description); err != nil {
 		return nil, err
 	}
+	s.refreshCache(ctx)
 	return s.store.GetGroup(ctx, id)
 }
 
@@ -119,7 +142,11 @@ func (s *Service) DeleteGroup(ctx context.Context, token string) error {
 	}
 	ctx, cancel := s.ctx(ctx)
 	defer cancel()
-	return s.store.DeleteGroup(ctx, id)
+	if err := s.store.DeleteGroup(ctx, id); err != nil {
+		return err
+	}
+	s.refreshCache(ctx)
+	return nil
 }
 
 // ── Members ───────────────────────────────────────────────────────────────────
@@ -163,17 +190,6 @@ func (s *Service) RemoveMember(ctx context.Context, groupToken, memberToken stri
 	return s.store.RemoveMember(ctx, groupID, memberType, memberID)
 }
 
-// GetDirectMembers returns the immediate (non-recursive) members of a group.
-func (s *Service) GetDirectMembers(ctx context.Context, groupToken string) ([]string, error) {
-	_, groupID, err := parseGroupToken(groupToken)
-	if err != nil {
-		return nil, err
-	}
-	ctx, cancel := s.ctx(ctx)
-	defer cancel()
-	return s.store.GetDirectMembers(ctx, groupID)
-}
-
 // GetAllMembers returns all transitive user+group members.
 func (s *Service) GetAllMembers(ctx context.Context, groupToken string, recursive bool) ([]string, error) {
 	_, groupID, err := parseGroupToken(groupToken)
@@ -198,19 +214,6 @@ func (s *Service) GetUserTokens(ctx context.Context, email string) ([]string, er
 	ctx, cancel := s.ctx(ctx)
 	defer cancel()
 	return s.store.GetUserTokens(ctx, email)
-}
-
-// SearchGroups returns group tokens matching query, optionally filtered by source.
-func (s *Service) SearchGroups(ctx context.Context, query, sourceID string, limit int) ([]string, error) {
-	groups, err := s.ListGroups(ctx, query, sourceID, limit)
-	if err != nil {
-		return nil, err
-	}
-	tokens := make([]string, len(groups))
-	for i, g := range groups {
-		tokens[i] = g.Token
-	}
-	return tokens, nil
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

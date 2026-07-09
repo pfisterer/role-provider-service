@@ -6,6 +6,8 @@ import (
 	"os"
 	"time"
 
+	"github.com/pfisterer/role-provider-service/internal/catalog"
+	"github.com/pfisterer/role-provider-service/internal/common"
 	"github.com/pfisterer/role-provider-service/internal/groupmgmt"
 	"github.com/pfisterer/role-provider-service/internal/helper"
 	"github.com/pfisterer/role-provider-service/internal/storage"
@@ -47,12 +49,32 @@ func RunApplication() {
 		}
 	}
 
+	// In-memory group search cache. The store stays the source of truth; the
+	// cache serves group search (type-ahead) without a store round-trip per
+	// request. Populated now, on a background ticker, and after each sync.
+	groupCache := catalog.New(func(ctx context.Context) ([]common.Group, error) {
+		ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		defer cancel()
+		return store.ListGroups(ctx, "", nil, 0)
+	}, log)
+	if err := groupCache.Refresh(context.Background()); err != nil {
+		log.Warnw("initial group cache load failed", zap.Error(err))
+	} else {
+		log.Infow("group search cache loaded", "groups", groupCache.Size())
+	}
+	groupCache.StartAutoRefresh(context.Background(), time.Duration(cfg.GroupCacheRefreshSeconds)*time.Second)
+
 	// Service layer.
 	timeout := time.Duration(cfg.ServiceTimeoutSeconds) * time.Second
-	groupSvc := groupmgmt.NewService(store, timeout, log)
+	groupSvc := groupmgmt.NewService(store, groupCache, timeout, log)
 
 	// Sync engine + scheduler.
 	engine := syncp.NewEngine(store, log)
+	engine.SetAfterSync(func(ctx context.Context) {
+		if err := groupCache.Refresh(ctx); err != nil {
+			log.Warnw("group cache refresh after sync failed", zap.Error(err))
+		}
+	})
 	scheduler := syncp.NewScheduler(engine, store, log)
 	if err := scheduler.Start(context.Background()); err != nil {
 		log.Warnw("failed to start sync scheduler", zap.Error(err))
