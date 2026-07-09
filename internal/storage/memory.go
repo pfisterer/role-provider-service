@@ -15,10 +15,10 @@ import (
 // memTuple is the internal representation of a Zanzibar-style tuple.
 type memTuple struct {
 	id       uuid.UUID
-	objID    string     // group ID (no prefix)
-	subjType string     // "user" | "group"
-	subjID   string     // email or group ID (no prefix)
-	subjRel  string     // "member" when subjType == "group", else ""
+	objID    string // group ID (no prefix)
+	subjType string // "user" | "group"
+	subjID   string // email or group ID (no prefix)
+	subjRel  string // "member" when subjType == "group", else ""
 	sourceID *uuid.UUID
 }
 
@@ -26,7 +26,7 @@ type memTuple struct {
 // It is intended for local development only — data is not persisted across restarts.
 type MemoryStore struct {
 	mu       sync.RWMutex
-	groups   map[string]*common.Group   // keyed by Group.ID
+	groups   map[string]*common.Group // keyed by Group.ID
 	sources  map[uuid.UUID]*common.Source
 	tuples   []memTuple
 	syncLogs []common.SyncLog
@@ -184,7 +184,8 @@ func (s *MemoryStore) GetDirectMembers(_ context.Context, groupID string) ([]str
 	defer s.mu.RUnlock()
 	var out []string
 	for _, t := range s.tuples {
-		if t.objID == groupID {
+		// Skip pattern rules — they are membership rules, not concrete members.
+		if t.objID == groupID && t.subjType != "pattern" {
 			out = append(out, common.BuildToken(t.subjType, t.subjID))
 		}
 	}
@@ -206,6 +207,9 @@ func (s *MemoryStore) GetAllMembers(_ context.Context, groupID string) ([]string
 		for _, t := range s.tuples {
 			if t.objID != current {
 				continue
+			}
+			if t.subjType == "pattern" {
+				continue // membership rule, not a concrete member
 			}
 			token := common.BuildToken(t.subjType, t.subjID)
 			if _, already := seen[token]; already {
@@ -229,10 +233,13 @@ func (s *MemoryStore) GetUserTokens(_ context.Context, email string) ([]string, 
 	tokens := []string{common.UserPrefix + email}
 	seen := map[string]struct{}{email: {}}
 
-	// Seed: find groups the user is directly in.
+	// Seed: find groups the user is directly in, plus groups whose pattern rule
+	// (subjType "pattern") matches the email.
 	queue := []string{}
 	for _, t := range s.tuples {
-		if t.subjType == "user" && t.subjID == email {
+		matches := (t.subjType == "user" && t.subjID == email) ||
+			(t.subjType == "pattern" && common.MatchEmailPattern(t.subjID, email))
+		if matches {
 			if _, already := seen[t.objID]; !already {
 				seen[t.objID] = struct{}{}
 				queue = append(queue, t.objID)

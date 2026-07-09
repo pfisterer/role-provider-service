@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -28,12 +29,12 @@ type DBGroup struct {
 func (DBGroup) TableName() string { return "groups" }
 
 type DBSource struct {
-	ID             uuid.UUID  `gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
-	Name           string     `gorm:"not null"`
-	Type           string     `gorm:"not null"`
-	Schedule       string     `gorm:"not null;default:''"`
-	DNEmailRegexp  string     `gorm:"not null;default:''"`
-	FilePath       string     `gorm:"not null;default:''"`
+	ID             uuid.UUID `gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
+	Name           string    `gorm:"not null"`
+	Type           string    `gorm:"not null"`
+	Schedule       string    `gorm:"not null;default:''"`
+	DNEmailRegexp  string    `gorm:"not null;default:''"`
+	FilePath       string    `gorm:"not null;default:''"`
 	LastSyncedAt   *time.Time
 	LastSyncStatus string `gorm:"not null;default:''"`
 	CreatedAt      time.Time
@@ -43,9 +44,9 @@ type DBSource struct {
 func (DBSource) TableName() string { return "sources" }
 
 type DBSyncLog struct {
-	ID            uuid.UUID  `gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
-	SourceID      uuid.UUID  `gorm:"type:uuid;not null;index"`
-	StartedAt     time.Time  `gorm:"not null"`
+	ID            uuid.UUID `gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
+	SourceID      uuid.UUID `gorm:"type:uuid;not null;index"`
+	StartedAt     time.Time `gorm:"not null"`
 	FinishedAt    *time.Time
 	TuplesAdded   int `gorm:"not null;default:0"`
 	TuplesRemoved int `gorm:"not null;default:0"`
@@ -58,13 +59,13 @@ func (DBSyncLog) TableName() string { return "sync_logs" }
 // DBTuple is a single Zanzibar-style relationship tuple.
 // obj_type is always "group". subj_rel is "member" when subj_type is "group", else "".
 type DBTuple struct {
-	ID       uuid.UUID  `gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
-	ObjID    string     `gorm:"not null;uniqueIndex:idx_tuple_uniq"`
-	Relation string     `gorm:"not null;default:'member';uniqueIndex:idx_tuple_uniq"`
-	SubjType string     `gorm:"not null;uniqueIndex:idx_tuple_uniq"` // "user" | "group"
-	SubjID   string     `gorm:"not null;uniqueIndex:idx_tuple_uniq"`
-	SubjRel  string     `gorm:"not null;default:'';uniqueIndex:idx_tuple_uniq"` // "" | "member"
-	SourceID *uuid.UUID `gorm:"type:uuid;index"`
+	ID        uuid.UUID  `gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
+	ObjID     string     `gorm:"not null;uniqueIndex:idx_tuple_uniq"`
+	Relation  string     `gorm:"not null;default:'member';uniqueIndex:idx_tuple_uniq"`
+	SubjType  string     `gorm:"not null;uniqueIndex:idx_tuple_uniq"` // "user" | "group"
+	SubjID    string     `gorm:"not null;uniqueIndex:idx_tuple_uniq"`
+	SubjRel   string     `gorm:"not null;default:'';uniqueIndex:idx_tuple_uniq"` // "" | "member"
+	SourceID  *uuid.UUID `gorm:"type:uuid;index"`
 	CreatedAt time.Time
 }
 
@@ -241,8 +242,9 @@ func (s *PostgresStore) RemoveMember(ctx context.Context, groupID, memberType, m
 // GetDirectMembers returns members that are directly in groupID (no recursion).
 func (s *PostgresStore) GetDirectMembers(ctx context.Context, groupID string) ([]string, error) {
 	var rows []DBTuple
+	// Skip pattern rules — they are membership rules, not concrete members.
 	if err := s.db.WithContext(ctx).
-		Where("obj_id = ? AND relation = 'member'", groupID).
+		Where("obj_id = ? AND relation = 'member' AND subj_type <> 'pattern'", groupID).
 		Find(&rows).Error; err != nil {
 		return nil, err
 	}
@@ -266,7 +268,7 @@ WITH RECURSIVE expand AS (
     INNER JOIN expand e ON e.subj_type = 'group' AND e.subj_rel = 'member'
         AND t.obj_id = e.subj_id AND t.relation = 'member'
 )
-SELECT DISTINCT subj_type, subj_id FROM expand`
+SELECT DISTINCT subj_type, subj_id FROM expand WHERE subj_type <> 'pattern'`
 
 	type row struct {
 		SubjType string `gorm:"column:subj_type"`
@@ -285,11 +287,25 @@ SELECT DISTINCT subj_type, subj_id FROM expand`
 
 // GetUserTokens returns all group tokens for a user (reverse recursive lookup).
 func (s *PostgresStore) GetUserTokens(ctx context.Context, email string) ([]string, error) {
+	// Groups seeded by a matching pattern rule. Glob matching is done in Go (for
+	// parity with the in-memory store and to keep the recursive SQL simple); the
+	// matched group IDs are injected into the CTE seed via unnest($2).
+	patternGroups, err := s.patternSeedGroups(ctx, email)
+	if err != nil {
+		return nil, err
+	}
+	// Join group IDs (which never contain commas — enforced by the CSV format)
+	// into a plain string param; string_to_array avoids driver-specific []string
+	// array binding. The seed branch is skipped entirely when there are no matches.
+	patternCSV := strings.Join(patternGroups, ",")
+
 	const query = `
 WITH RECURSIVE user_groups AS (
     SELECT obj_id
     FROM tuples
     WHERE subj_type = 'user' AND subj_id = $1 AND relation = 'member'
+  UNION
+    SELECT unnest(string_to_array($2, ',')) WHERE $2 <> ''
   UNION
     SELECT t.obj_id
     FROM tuples t
@@ -299,7 +315,7 @@ WITH RECURSIVE user_groups AS (
 SELECT DISTINCT obj_id FROM user_groups`
 
 	var ids []string
-	if err := s.db.WithContext(ctx).Raw(query, email).Scan(&ids).Error; err != nil {
+	if err := s.db.WithContext(ctx).Raw(query, email, patternCSV).Scan(&ids).Error; err != nil {
 		return nil, err
 	}
 	tokens := make([]string, 0, len(ids)+1)
@@ -308,6 +324,28 @@ SELECT DISTINCT obj_id FROM user_groups`
 		tokens = append(tokens, common.GroupPrefix+id)
 	}
 	return tokens, nil
+}
+
+// patternSeedGroups returns the IDs of groups whose pattern rule matches the
+// email. Always returns a non-nil slice so it binds as an empty text[] (not NULL).
+func (s *PostgresStore) patternSeedGroups(ctx context.Context, email string) ([]string, error) {
+	type row struct {
+		ObjID  string `gorm:"column:obj_id"`
+		SubjID string `gorm:"column:subj_id"`
+	}
+	var rows []row
+	if err := s.db.WithContext(ctx).
+		Raw(`SELECT obj_id, subj_id FROM tuples WHERE subj_type = 'pattern' AND relation = 'member'`).
+		Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	out := []string{}
+	for _, r := range rows {
+		if common.MatchEmailPattern(r.SubjID, email) {
+			out = append(out, r.ObjID)
+		}
+	}
+	return out, nil
 }
 
 // ── Sources ───────────────────────────────────────────────────────────────────

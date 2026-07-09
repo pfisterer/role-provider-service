@@ -10,6 +10,9 @@ import (
 const (
 	GroupPrefix = "group:"
 	UserPrefix  = "user:"
+	// PatternPrefix marks an email-glob membership rule (see MatchEmailPattern):
+	// every email matching the glob is a member of the group.
+	PatternPrefix = "pattern:"
 
 	SourceTypeCSV  = "csv"
 	SourceTypeLDIF = "ldif"
@@ -70,6 +73,9 @@ func ParseToken(token string) (typ, id string) {
 	}
 	if after, ok := strings.CutPrefix(token, UserPrefix); ok {
 		return "user", after
+	}
+	if after, ok := strings.CutPrefix(token, PatternPrefix); ok {
+		return "pattern", after
 	}
 	return "", ""
 }

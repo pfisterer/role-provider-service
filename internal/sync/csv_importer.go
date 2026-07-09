@@ -61,13 +61,16 @@ func ParseCSV(r io.Reader) ([]common.TuplePair, error) {
 }
 
 // resolveMember returns (type, id) from a member string.
-// Accepts "user:email", "group:name", or bare email / group name.
+// Accepts "user:email", "group:name", "pattern:<email-glob>", or bare email / group name.
 func resolveMember(member string) (typ, id string) {
 	if strings.HasPrefix(member, common.UserPrefix) {
 		return "user", strings.TrimPrefix(member, common.UserPrefix)
 	}
 	if strings.HasPrefix(member, common.GroupPrefix) {
 		return "group", strings.TrimPrefix(member, common.GroupPrefix)
+	}
+	if strings.HasPrefix(member, common.PatternPrefix) {
+		return "pattern", strings.TrimPrefix(member, common.PatternPrefix)
 	}
 	// Bare value: treat as email (user) if it contains @, otherwise group.
 	if strings.Contains(member, "@") {
