@@ -49,7 +49,7 @@ func (e *Engine) RunSync(ctx context.Context, sourceID uuid.UUID, content []byte
 		e.log.Warnw("failed to create sync log", "source_id", sourceID, zap.Error(err))
 	}
 
-	tuples, parseErr := e.parseTuples(src, content)
+	tuples, descriptions, parseErr := e.parseTuples(src, content)
 	if parseErr != nil {
 		now := time.Now()
 		logEntry.FinishedAt = &now
@@ -61,7 +61,7 @@ func (e *Engine) RunSync(ctx context.Context, sourceID uuid.UUID, content []byte
 
 	e.log.Infow("sync: parsed tuples", "source_id", sourceID, "count", len(tuples))
 
-	added, removed, replaceErr := e.store.ReplaceTuples(ctx, sourceID, tuples)
+	added, removed, replaceErr := e.store.ReplaceTuples(ctx, sourceID, tuples, descriptions)
 	now := time.Now()
 	logEntry.FinishedAt = &now
 	logEntry.TuplesAdded = added
@@ -85,20 +85,21 @@ func (e *Engine) RunSync(ctx context.Context, sourceID uuid.UUID, content []byte
 	return nil
 }
 
-// parseTuples reads the data (from content bytes or file path) and parses it.
-func (e *Engine) parseTuples(src *common.Source, content []byte) ([]common.TuplePair, error) {
+// parseTuples reads the data (from content bytes or file path) and parses it
+// into tuples plus the group descriptions carried by the source.
+func (e *Engine) parseTuples(src *common.Source, content []byte) ([]common.TuplePair, map[string]string, error) {
 	var r io.Reader
 	if content != nil {
 		r = bytes.NewReader(content)
 	} else if src.FilePath != "" {
 		f, err := os.Open(src.FilePath)
 		if err != nil {
-			return nil, fmt.Errorf("open file %s: %w", src.FilePath, err)
+			return nil, nil, fmt.Errorf("open file %s: %w", src.FilePath, err)
 		}
 		defer f.Close()
 		r = f
 	} else {
-		return nil, fmt.Errorf("source has neither uploaded content nor a file_path")
+		return nil, nil, fmt.Errorf("source has neither uploaded content nor a file_path")
 	}
 
 	switch src.Type {
@@ -106,10 +107,10 @@ func (e *Engine) parseTuples(src *common.Source, content []byte) ([]common.Tuple
 		return ParseCSV(r)
 	case common.SourceTypeLDIF:
 		if src.DNEmailRegexp == "" {
-			return nil, fmt.Errorf("ldif source requires dn_email_regexp to be set")
+			return nil, nil, fmt.Errorf("ldif source requires dn_email_regexp to be set")
 		}
 		return ParseLDIF(r, src.DNEmailRegexp)
 	default:
-		return nil, fmt.Errorf("unsupported source type %q", src.Type)
+		return nil, nil, fmt.Errorf("unsupported source type %q", src.Type)
 	}
 }

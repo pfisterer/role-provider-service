@@ -80,7 +80,8 @@ func (s *MemoryStore) ListGroups(_ context.Context, query string, sourceID *uuid
 	for _, g := range s.groups {
 		if needle != "" {
 			if !strings.Contains(strings.ToLower(g.ID), needle) &&
-				!strings.Contains(strings.ToLower(g.DisplayName), needle) {
+				!strings.Contains(strings.ToLower(g.DisplayName), needle) &&
+				!strings.Contains(strings.ToLower(g.Description), needle) {
 				continue
 			}
 		}
@@ -398,7 +399,7 @@ func (s *MemoryStore) ListSyncLogs(_ context.Context, sourceID uuid.UUID, limit 
 
 // ── ReplaceTuples ─────────────────────────────────────────────────────────────
 
-func (s *MemoryStore) ReplaceTuples(_ context.Context, sourceID uuid.UUID, newTuples []common.TuplePair) (added, removed int, err error) {
+func (s *MemoryStore) ReplaceTuples(_ context.Context, sourceID uuid.UUID, newTuples []common.TuplePair, descriptions map[string]string) (added, removed int, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -419,18 +420,23 @@ func (s *MemoryStore) ReplaceTuples(_ context.Context, sourceID uuid.UUID, newTu
 		}
 		newSet[k] = struct{}{}
 
-		// Auto-create missing group.
-		if _, ok := s.groups[p.GroupID]; !ok {
+		// Auto-create missing group, and keep an existing group's description in
+		// sync with the import.
+		if g, ok := s.groups[p.GroupID]; !ok {
 			now := time.Now().UTC()
 			sid := sourceID
 			s.groups[p.GroupID] = &common.Group{
 				ID:          p.GroupID,
 				Token:       common.GroupPrefix + p.GroupID,
 				DisplayName: p.GroupID,
+				Description: descriptions[p.GroupID],
 				SourceID:    &sid,
 				CreatedAt:   now,
 				UpdatedAt:   now,
 			}
+		} else if desc, has := descriptions[p.GroupID]; has && g.Description != desc {
+			g.Description = desc
+			g.UpdatedAt = time.Now().UTC()
 		}
 
 		if _, exists := existingIdx[k]; !exists {

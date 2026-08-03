@@ -77,7 +77,7 @@ func (c *GroupCache) Size() int {
 	return len(c.groups)
 }
 
-// Search returns groups whose ID or display name contains query
+// Search returns groups whose ID, display name or description contains query
 // (case-insensitive). An empty query matches all. Results are sorted by ID and
 // truncated to limit (limit <= 0 means no limit). Served entirely from memory.
 func (c *GroupCache) Search(query string, limit int) []common.Group {
@@ -90,7 +90,8 @@ func (c *GroupCache) Search(query string, limit int) []common.Group {
 	for _, g := range c.groups {
 		if q != "" &&
 			!strings.Contains(strings.ToLower(g.ID), q) &&
-			!strings.Contains(strings.ToLower(g.DisplayName), q) {
+			!strings.Contains(strings.ToLower(g.DisplayName), q) &&
+			!strings.Contains(strings.ToLower(g.Description), q) {
 			continue
 		}
 		out = append(out, g)

@@ -9,16 +9,19 @@ import (
 	"github.com/pfisterer/role-provider-service/internal/common"
 )
 
-// ParseCSV reads a two-column CSV (group, user_email) and returns TuplePairs.
+// ParseCSV reads a two-column CSV (group, user_email) and returns TuplePairs
+// plus the group descriptions found in the file.
 // The header row is detected automatically and skipped.
-// An optional third column "description" is ignored.
-func ParseCSV(r io.Reader) ([]common.TuplePair, error) {
+// An optional third column holds the group description; it is per group, so the
+// last non-empty value for a group wins.
+func ParseCSV(r io.Reader) ([]common.TuplePair, map[string]string, error) {
 	reader := csv.NewReader(r)
 	reader.TrimLeadingSpace = true
 	reader.Comment = '#'
 	reader.FieldsPerRecord = -1 // allow variable columns
 
 	var tuples []common.TuplePair
+	descriptions := map[string]string{}
 	lineNum := 0
 
 	for {
@@ -27,7 +30,7 @@ func ParseCSV(r io.Reader) ([]common.TuplePair, error) {
 			break
 		}
 		if err != nil {
-			return nil, fmt.Errorf("csv parse error: %w", err)
+			return nil, nil, fmt.Errorf("csv parse error: %w", err)
 		}
 		lineNum++
 
@@ -49,6 +52,12 @@ func ParseCSV(r io.Reader) ([]common.TuplePair, error) {
 		// Strip "group:" prefix if present in the group column.
 		group = strings.TrimPrefix(group, common.GroupPrefix)
 
+		if len(record) > 2 {
+			if desc := strings.TrimSpace(record[2]); desc != "" {
+				descriptions[group] = desc
+			}
+		}
+
 		// Determine member type.
 		memberType, memberID := resolveMember(member)
 		tuples = append(tuples, common.TuplePair{
@@ -57,7 +66,7 @@ func ParseCSV(r io.Reader) ([]common.TuplePair, error) {
 			MemberID:   memberID,
 		})
 	}
-	return tuples, nil
+	return tuples, descriptions, nil
 }
 
 // resolveMember returns (type, id) from a member string.

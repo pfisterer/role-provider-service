@@ -27,7 +27,7 @@ func registerGroupRoutes(rg *gin.RouterGroup, svc *groupmgmt.Service, maxLimit i
 //	@Tags			groups
 //	@Produce		json
 //	@Security		Bearer
-//	@Param			q		query		string	false	"Search query (matches ID or display name)"
+//	@Param			q		query		string	false	"Search query (matches ID, display name or description)"
 //	@Param			source	query		string	false	"Filter by sync source UUID"
 //	@Param			limit	query		int		false	"Maximum results to return"	default(50)
 //	@Success		200		{array}		common.Group

@@ -102,7 +102,9 @@ type Store interface {
 	ListSyncLogs(ctx context.Context, sourceID uuid.UUID, limit int) ([]common.SyncLog, error)
 
 	// Atomic tuple replacement for a source (used during sync)
-	ReplaceTuples(ctx context.Context, sourceID uuid.UUID, newTuples []common.TuplePair) (added, removed int, err error)
+	// ReplaceTuples replaces this source's tuples. descriptions maps group ID →
+	// description as carried by the import; entries update the matching group.
+	ReplaceTuples(ctx context.Context, sourceID uuid.UUID, newTuples []common.TuplePair, descriptions map[string]string) (added, removed int, err error)
 }
 
 // ── PostgresStore ─────────────────────────────────────────────────────────────
@@ -160,7 +162,8 @@ func (s *PostgresStore) GetGroup(ctx context.Context, id string) (*common.Group,
 func (s *PostgresStore) ListGroups(ctx context.Context, query string, sourceID *uuid.UUID, limit int) ([]common.Group, error) {
 	q := s.db.WithContext(ctx).Model(&DBGroup{})
 	if query != "" {
-		q = q.Where("id ILIKE ? OR display_name ILIKE ?", "%"+query+"%", "%"+query+"%")
+		like := "%" + query + "%"
+		q = q.Where("id ILIKE ? OR display_name ILIKE ? OR description ILIKE ?", like, like, like)
 	}
 	if sourceID != nil {
 		// Groups whose primary source matches OR that have at least one tuple from this source.
@@ -482,9 +485,10 @@ func (s *PostgresStore) ListSyncLogs(ctx context.Context, sourceID uuid.UUID, li
 
 // ── ReplaceTuples ─────────────────────────────────────────────────────────────
 
-// ReplaceTuples atomically replaces all tuples owned by sourceID with newTuples.
+// ReplaceTuples atomically replaces all tuples owned by sourceID with newTuples
+// and applies the group descriptions carried by the import.
 // It uses batch operations throughout to stay efficient with large imports.
-func (s *PostgresStore) ReplaceTuples(ctx context.Context, sourceID uuid.UUID, newTuples []common.TuplePair) (added, removed int, err error) {
+func (s *PostgresStore) ReplaceTuples(ctx context.Context, sourceID uuid.UUID, newTuples []common.TuplePair, descriptions map[string]string) (added, removed int, err error) {
 	const batchSize = 500
 
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -576,12 +580,33 @@ func (s *PostgresStore) ReplaceTuples(ctx context.Context, sourceID uuid.UUID, n
 			var newGroups []DBGroup
 			for _, id := range allGroupIDs {
 				if _, ok := existingGroupSet[id]; !ok {
-					newGroups = append(newGroups, DBGroup{ID: id, DisplayName: id, SourceID: &sourceID})
+					newGroups = append(newGroups, DBGroup{
+						ID:          id,
+						DisplayName: id,
+						Description: descriptions[id],
+						SourceID:    &sourceID,
+					})
 				}
 			}
 			if len(newGroups) > 0 {
 				if err := tx.Clauses(clause.OnConflict{DoNothing: true}).
 					CreateInBatches(newGroups, batchSize).Error; err != nil {
+					return err
+				}
+			}
+
+			// Keep the description of groups that already existed in sync with the
+			// import — a changed description in the source has to land in the DB.
+			for _, id := range allGroupIDs {
+				if _, existed := existingGroupSet[id]; !existed {
+					continue
+				}
+				desc, ok := descriptions[id]
+				if !ok {
+					continue
+				}
+				if err := tx.Model(&DBGroup{}).Where("id = ? AND description <> ?", id, desc).
+					Update("description", desc).Error; err != nil {
 					return err
 				}
 			}

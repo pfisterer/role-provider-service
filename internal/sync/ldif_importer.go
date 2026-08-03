@@ -10,7 +10,8 @@ import (
 	"github.com/pfisterer/role-provider-service/internal/common"
 )
 
-// ParseLDIF reads an LDIF stream and extracts group→member tuples.
+// ParseLDIF reads an LDIF stream and extracts group→member tuples plus each
+// group's "description" attribute.
 //
 // dnEmailRegexp is applied to each member DN to extract an email address.
 // The first capture group is used. Example patterns:
@@ -18,21 +19,22 @@ import (
 //	"mail=([^,]+)"            → extracts "user@dhbw.de" from "mail=user@dhbw.de,ou=..."
 //	"uid=([^,@]+@[^,]+)"      → extracts email-shaped uid values
 //	"uid=([^,]+)"             → extracts uid (suitable if uids are email addresses)
-func ParseLDIF(r io.Reader, dnEmailRegexp string) ([]common.TuplePair, error) {
+func ParseLDIF(r io.Reader, dnEmailRegexp string) ([]common.TuplePair, map[string]string, error) {
 	re, err := regexp.Compile(dnEmailRegexp)
 	if err != nil {
-		return nil, fmt.Errorf("invalid dn_email_regexp %q: %w", dnEmailRegexp, err)
+		return nil, nil, fmt.Errorf("invalid dn_email_regexp %q: %w", dnEmailRegexp, err)
 	}
 	if re.NumSubexp() < 1 {
-		return nil, fmt.Errorf("dn_email_regexp %q must contain at least one capture group", dnEmailRegexp)
+		return nil, nil, fmt.Errorf("dn_email_regexp %q must contain at least one capture group", dnEmailRegexp)
 	}
 
 	l := &gorldif.LDIF{}
 	if err := gorldif.Unmarshal(r, l); err != nil {
-		return nil, fmt.Errorf("ldif parse error: %w", err)
+		return nil, nil, fmt.Errorf("ldif parse error: %w", err)
 	}
 
 	var tuples []common.TuplePair
+	descriptions := map[string]string{}
 
 	for _, entry := range l.Entries {
 		e := entry.Entry
@@ -49,6 +51,10 @@ func ParseLDIF(r io.Reader, dnEmailRegexp string) ([]common.TuplePair, error) {
 		}
 		// Strip accidental "group:" prefix.
 		groupID = strings.TrimPrefix(groupID, common.GroupPrefix)
+
+		if desc := strings.TrimSpace(firstValue(e.GetAttributeValues("description"))); desc != "" {
+			descriptions[groupID] = desc
+		}
 
 		// Collect member DNs from both "member" and "uniqueMember" attributes.
 		memberDNs := append(
@@ -67,7 +73,15 @@ func ParseLDIF(r io.Reader, dnEmailRegexp string) ([]common.TuplePair, error) {
 			})
 		}
 	}
-	return tuples, nil
+	return tuples, descriptions, nil
+}
+
+// firstValue returns the first entry of vals, or "" when there is none.
+func firstValue(vals []string) string {
+	if len(vals) == 0 {
+		return ""
+	}
+	return vals[0]
 }
 
 // isGroupObjectClass returns true when any objectClass value is a known group type.
