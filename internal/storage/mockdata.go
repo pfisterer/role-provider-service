@@ -40,24 +40,24 @@ func SeedMockData(ctx context.Context, store Store, log *zap.SugaredLogger) erro
 		}
 	}
 
-	// Group → group hierarchy (child is a member of parent).
-	// This mirrors the delegation hierarchy in openstack-management-api.
-	groupHierarchy := []struct{ child, parent string }{
-		{"dept_cs_admin", "root_uni"},
-		{"dept_bio", "root_uni"},
-		{"dept_cs_faculty", "dept_cs_admin"},
-		{"cs-student", "dept_cs_faculty"},
-	}
-	for _, h := range groupHierarchy {
-		if err := store.AddMember(ctx, h.parent, "group", h.child, nil); err != nil {
-			return err
-		}
-	}
+	// Deliberately NO group → group nesting here.
+	//
+	// Nesting means "every member of the child is also a member of the parent", so
+	// linking dept_bio into root_uni handed every biology member the root_uni
+	// token — and root_uni is the admin scope of the root node in
+	// openstack-management-api. The result: every faculty member was a root admin
+	// and saw the whole tree, which makes the mock data useless for trying out the
+	// delegation model (the earlier version did exactly this, one link per
+	// department, plus students into the faculty pool).
+	//
+	// Delegation in openstack-management-api does not run through group nesting at
+	// all: it runs through each node's AdminScope and the parent chain. The groups
+	// here are just flat, distinct populations — which is what makes switching
+	// roles in the UI show different things.
 
 	log.Infow("Mock data seeded",
 		"groups", len(groups),
 		"user_memberships", len(userMemberships),
-		"group_hierarchy_links", len(groupHierarchy),
 	)
 	return nil
 }
