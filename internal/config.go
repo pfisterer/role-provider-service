@@ -60,7 +60,7 @@ func loadAppConfiguration() (AppConfiguration, error) {
 		DBType:                   helper.GetEnvString("DB_TYPE", "memory"),
 		DBConnectionString:       helper.GetEnvString("DB_CONNECTION_STRING", "host=localhost user=postgres password=postgres dbname=group_auth_service port=5432 sslmode=disable TimeZone=UTC"),
 		DBAddMockData:            helper.GetEnvString("DB_ADD_MOCK_DATA", "false") == "true",
-		GinBindString:            helper.GetEnvString("API_BIND", ":5"),
+		GinBindString:            helper.GetEnvString("API_BIND", ":8085"),
 		DevMode:                  helper.GetEnvString("API_MODE", "production") == "development",
 		APITokens:                tokens,
 		APIWriteTokens:           helper.GetEnvStringSlice("API_WRITE_TOKENS", nil),
