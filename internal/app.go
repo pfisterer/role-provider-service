@@ -83,15 +83,16 @@ func RunApplication() {
 
 	// HTTP router.
 	router := webserver.SetupRouter(webserver.SetupConfig{
-		DevMode:          cfg.DevMode,
-		Log:              log,
-		APITokens:        cfg.APITokens,
-		APIWriteTokens:   cfg.APIWriteTokens,
-		GroupSvc:         groupSvc,
-		Store:            store,
-		SyncEngine:       engine,
-		Scheduler:        scheduler,
-		MaxResponseLimit: cfg.MaxResponseLimit,
+		DevMode:            cfg.DevMode,
+		Log:                log,
+		APITokens:          cfg.APITokens,
+		APIWriteTokens:     cfg.APIWriteTokens,
+		GroupSvc:           groupSvc,
+		Store:              store,
+		SyncEngine:         engine,
+		Scheduler:          scheduler,
+		MaxResponseLimit:   cfg.MaxResponseLimit,
+		CORSAllowedOrigins: cfg.CORSAllowedOrigins,
 	})
 
 	log.Infow("Listening", "bind", cfg.GinBindString)

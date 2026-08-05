@@ -34,7 +34,11 @@
           "properties": {
             "mode": { "type": "string", "enum": ["production", "development"] },
             "tokens": { "type": "string", "minLength": 1 },
-            "writeTokens": { "type": "string" }
+            "writeTokens": { "type": "string" },
+            "corsAllowedOrigins": {
+              "type": "array",
+              "items": { "type": "string", "pattern": "^https?://[^/]+$" }
+            }
           }
         }
       }

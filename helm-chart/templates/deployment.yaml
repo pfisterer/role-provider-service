@@ -45,6 +45,8 @@ spec:
               value: ":{{ .Values.roleProviderService.port }}"
             - name: API_MODE
               value: {{ .Values.roleProviderService.api.mode | quote }}
+            - name: CORS_ALLOWED_ORIGINS
+              value: {{ join "," (.Values.roleProviderService.api.corsAllowedOrigins | default list) | quote }}
             # Read-only tokens: consumers query the graph with these.
             - name: API_TOKENS
               valueFrom:

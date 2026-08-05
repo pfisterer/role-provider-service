@@ -27,6 +27,10 @@ type AppConfiguration struct {
 	// sources. Empty means no token can write — writing the group graph means
 	// writing authorization for every consumer, so it is opt-in, not a fallback.
 	APIWriteTokens []string `json:"api_write_tokens"`
+	// CORSAllowedOrigins lists the exact browser origins allowed to call this
+	// API cross-origin. Empty (the default) allows none, which is correct here:
+	// the consumers are services carrying an API token, not browsers.
+	CORSAllowedOrigins []string `json:"cors_allowed_origins"`
 	// ServiceTimeoutSeconds is the per-request context timeout.
 	ServiceTimeoutSeconds int `json:"service_timeout_seconds"`
 	// MaxResponseLimit is the global upper bound on paginated list endpoints (default 50).
@@ -60,6 +64,7 @@ func loadAppConfiguration() (AppConfiguration, error) {
 		DevMode:                  helper.GetEnvString("API_MODE", "production") == "development",
 		APITokens:                tokens,
 		APIWriteTokens:           helper.GetEnvStringSlice("API_WRITE_TOKENS", nil),
+		CORSAllowedOrigins:       helper.GetEnvStringSlice("CORS_ALLOWED_ORIGINS", nil),
 		ServiceTimeoutSeconds:    helper.GetEnvInt("SERVICE_TIMEOUT_SECONDS", 30),
 		MaxResponseLimit:         helper.GetEnvInt("MAX_RESPONSE_LIMIT", 50),
 		GroupCacheRefreshSeconds: helper.GetEnvInt("GROUP_CACHE_REFRESH_SECONDS", 600),

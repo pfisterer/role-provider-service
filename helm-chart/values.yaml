@@ -25,6 +25,10 @@ roleProviderService:
     # Write tokens (comma-separated). Required for creating/changing groups,
     # memberships and sync sources. Empty = nobody may write via the API.
     writeTokens: ""
+    # Browser origins allowed to call /v1 cross-origin. This API is consumed by
+    # other services with an API token, so the empty default (no cross-origin
+    # access) is the normal setting.
+    corsAllowedOrigins: []
 
   serviceTimeoutSeconds: 30
 
