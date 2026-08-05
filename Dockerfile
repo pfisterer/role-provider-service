@@ -24,4 +24,9 @@ COPY --from=builder /app/tmp/build/role-provider-service /app/
 
 EXPOSE 8085
 
+# Run as a non-root user (numeric UID so Kubernetes can enforce runAsNonRoot
+# without resolving names). Nothing in this image is written at runtime; the
+# binary only needs to be readable and executable.
+USER 65532:65532
+
 CMD ["./role-provider-service"]
