@@ -24,6 +24,7 @@ type SetupConfig struct {
 	DevMode          bool
 	Log              *zap.SugaredLogger
 	APITokens        []string
+	APIWriteTokens   []string
 	GroupSvc         *groupmgmt.Service
 	Store            storage.Store
 	SyncEngine       *syncp.Engine
@@ -66,13 +67,14 @@ func SetupRouter(cfg SetupConfig) *gin.Engine {
 	setupCORS(apiGroup)
 
 	// Authentication.
-	apiGroup.Use(BearerAuthMiddleware(cfg.APITokens, cfg.Log))
+	apiGroup.Use(BearerAuthMiddleware(cfg.APITokens, cfg.APIWriteTokens, cfg.Log))
 	apiGroup.Use(debugLoggingMiddleware(cfg.Log))
 
 	// Route registration.
-	registerGroupRoutes(apiGroup, cfg.GroupSvc, cfg.MaxResponseLimit)
+	write := requireWriteToken(cfg.Log)
+	registerGroupRoutes(apiGroup, cfg.GroupSvc, cfg.MaxResponseLimit, write)
 	registerUserRoutes(apiGroup, cfg.GroupSvc, cfg.Store, cfg.MaxResponseLimit)
-	registerSyncRoutes(apiGroup, cfg.Store, cfg.SyncEngine, cfg.Scheduler)
+	registerSyncRoutes(apiGroup, cfg.Store, cfg.SyncEngine, cfg.Scheduler, write)
 	registerAdminRoutes(apiGroup, cfg.Store)
 
 	return router

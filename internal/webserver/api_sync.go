@@ -13,15 +13,15 @@ import (
 	syncp "github.com/pfisterer/role-provider-service/internal/sync"
 )
 
-func registerSyncRoutes(rg *gin.RouterGroup, store storage.Store, engine *syncp.Engine, scheduler *syncp.Scheduler) {
+func registerSyncRoutes(rg *gin.RouterGroup, store storage.Store, engine *syncp.Engine, scheduler *syncp.Scheduler, write gin.HandlerFunc) {
 	s := rg.Group("/sync/sources")
 	s.GET("", listSources(store))
-	s.POST("", createSource(store, scheduler))
+	s.POST("", write, createSource(store, scheduler))
 	s.GET("/:id", getSource(store))
-	s.PUT("/:id", updateSource(store, scheduler))
-	s.DELETE("/:id", deleteSource(store, scheduler))
-	s.POST("/:id/upload", uploadAndSync(engine))
-	s.POST("/:id/trigger", triggerSync(engine))
+	s.PUT("/:id", write, updateSource(store, scheduler))
+	s.DELETE("/:id", write, deleteSource(store, scheduler))
+	s.POST("/:id/upload", write, uploadAndSync(engine))
+	s.POST("/:id/trigger", write, triggerSync(engine))
 	s.GET("/:id/log", getSyncLog(store))
 }
 

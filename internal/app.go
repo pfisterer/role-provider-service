@@ -86,6 +86,7 @@ func RunApplication() {
 		DevMode:          cfg.DevMode,
 		Log:              log,
 		APITokens:        cfg.APITokens,
+		APIWriteTokens:   cfg.APIWriteTokens,
 		GroupSvc:         groupSvc,
 		Store:            store,
 		SyncEngine:       engine,

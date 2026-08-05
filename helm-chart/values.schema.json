@@ -33,7 +33,8 @@
           "required": ["tokens"],
           "properties": {
             "mode": { "type": "string", "enum": ["production", "development"] },
-            "tokens": { "type": "string", "minLength": 1 }
+            "tokens": { "type": "string", "minLength": 1 },
+            "writeTokens": { "type": "string" }
           }
         }
       }

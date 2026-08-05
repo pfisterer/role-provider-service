@@ -20,8 +20,13 @@ type AppConfiguration struct {
 	GinBindString string `json:"gin_bind_string"`
 	// DevMode enables debug logging and disables HTTP caching.
 	DevMode bool `json:"dev_mode"`
-	// APITokens is the list of valid Bearer tokens.
+	// APITokens are the READ-ONLY Bearer tokens: they may query the graph but
+	// not change it. Consumers (openstack-management-api, …) get one of these.
 	APITokens []string `json:"api_tokens"`
+	// APIWriteTokens may additionally create/modify groups, memberships and sync
+	// sources. Empty means no token can write — writing the group graph means
+	// writing authorization for every consumer, so it is opt-in, not a fallback.
+	APIWriteTokens []string `json:"api_write_tokens"`
 	// ServiceTimeoutSeconds is the per-request context timeout.
 	ServiceTimeoutSeconds int `json:"service_timeout_seconds"`
 	// MaxResponseLimit is the global upper bound on paginated list endpoints (default 50).
@@ -54,6 +59,7 @@ func loadAppConfiguration() (AppConfiguration, error) {
 		GinBindString:            helper.GetEnvString("API_BIND", ":5"),
 		DevMode:                  helper.GetEnvString("API_MODE", "production") == "development",
 		APITokens:                tokens,
+		APIWriteTokens:           helper.GetEnvStringSlice("API_WRITE_TOKENS", nil),
 		ServiceTimeoutSeconds:    helper.GetEnvInt("SERVICE_TIMEOUT_SECONDS", 30),
 		MaxResponseLimit:         helper.GetEnvInt("MAX_RESPONSE_LIMIT", 50),
 		GroupCacheRefreshSeconds: helper.GetEnvInt("GROUP_CACHE_REFRESH_SECONDS", 600),

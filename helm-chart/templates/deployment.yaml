@@ -45,11 +45,20 @@ spec:
               value: ":{{ .Values.roleProviderService.port }}"
             - name: API_MODE
               value: {{ .Values.roleProviderService.api.mode | quote }}
+            # Read-only tokens: consumers query the graph with these.
             - name: API_TOKENS
               valueFrom:
                 secretKeyRef:
                   name: {{ $secretName }}
                   key: api-tokens
+            # Write tokens: may change groups, memberships and sync sources.
+            # Optional key — missing/empty means nothing may write.
+            - name: API_WRITE_TOKENS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: api-write-tokens
+                  optional: true
 
             # ── Miscellaneous ────────────────────────────────────────────────
             - name: SERVICE_TIMEOUT_SECONDS

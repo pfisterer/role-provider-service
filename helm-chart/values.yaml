@@ -20,7 +20,11 @@ roleProviderService:
 
   api:
     mode: "production"
+    # Read-only tokens (comma-separated). Consumers of the graph get these.
     tokens: "change-me"
+    # Write tokens (comma-separated). Required for creating/changing groups,
+    # memberships and sync sources. Empty = nobody may write via the API.
+    writeTokens: ""
 
   serviceTimeoutSeconds: 30
 

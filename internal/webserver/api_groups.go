@@ -8,16 +8,16 @@ import (
 	"github.com/pfisterer/role-provider-service/internal/groupmgmt"
 )
 
-func registerGroupRoutes(rg *gin.RouterGroup, svc *groupmgmt.Service, maxLimit int) {
+func registerGroupRoutes(rg *gin.RouterGroup, svc *groupmgmt.Service, maxLimit int, write gin.HandlerFunc) {
 	g := rg.Group("/groups")
 	g.GET("", listGroups(svc, maxLimit))
-	g.POST("", createGroup(svc))
+	g.POST("", write, createGroup(svc))
 	g.GET("/:token", getGroup(svc))
-	g.PATCH("/:token", updateGroup(svc))
-	g.DELETE("/:token", deleteGroup(svc))
+	g.PATCH("/:token", write, updateGroup(svc))
+	g.DELETE("/:token", write, deleteGroup(svc))
 	g.GET("/:token/members", listMembers(svc))
-	g.POST("/:token/members", addMember(svc))
-	g.DELETE("/:token/members/*member", removeMember(svc))
+	g.POST("/:token/members", write, addMember(svc))
+	g.DELETE("/:token/members/*member", write, removeMember(svc))
 }
 
 // listGroups godoc
