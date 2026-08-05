@@ -70,7 +70,14 @@ func SetupRouter(cfg SetupConfig) *gin.Engine {
 
 	// Authentication.
 	apiGroup.Use(BearerAuthMiddleware(cfg.APITokens, cfg.APIWriteTokens, cfg.Log))
-	apiGroup.Use(debugLoggingMiddleware(cfg.Log))
+	// Response bodies here are group memberships: names and mail addresses of
+	// real people. That belongs in a local debug session, never in the cluster's
+	// central log storage — so this middleware exists only in dev mode.
+	if cfg.DevMode {
+		apiGroup.Use(debugLoggingMiddleware(cfg.Log))
+	} else {
+		apiGroup.Use(accessLoggingMiddleware(cfg.Log))
+	}
 
 	// Route registration.
 	write := requireWriteToken(cfg.Log)
@@ -170,16 +177,36 @@ func (w *capturingWriter) Write(b []byte) (int, error) {
 	return w.ResponseWriter.Write(b)
 }
 
+// accessLoggingMiddleware is the production counterpart of
+// debugLoggingMiddleware: same one line per request, but without the response
+// body, which on this service is personal data.
+func accessLoggingMiddleware(log *zap.SugaredLogger) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		start := time.Now()
+		c.Next()
+		log.Infof("%s %s → %d (%s)", c.Request.Method, requestPath(c),
+			c.Writer.Status(), time.Since(start).Round(time.Millisecond))
+	}
+}
+
+// requestPath is the request path with its query string, if any.
+func requestPath(c *gin.Context) string {
+	path := c.Request.URL.Path
+	if q := c.Request.URL.RawQuery; q != "" {
+		path += "?" + q
+	}
+	return path
+}
+
+// debugLoggingMiddleware additionally logs the response body. Dev mode only —
+// see the wiring in SetupRouter.
 func debugLoggingMiddleware(log *zap.SugaredLogger) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		start := time.Now()
 		cw := &capturingWriter{ResponseWriter: c.Writer, body: &bytes.Buffer{}}
 		c.Writer = cw
 		c.Next()
-		path := c.Request.URL.Path
-		if q := c.Request.URL.RawQuery; q != "" {
-			path += "?" + q
-		}
+		path := requestPath(c)
 		elapsed := time.Since(start).Round(time.Millisecond)
 		body := bytes.TrimSpace(cw.body.Bytes())
 		if len(body) > 0 {
