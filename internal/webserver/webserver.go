@@ -61,7 +61,7 @@ func SetupRouter(cfg SetupConfig) *gin.Engine {
 	})
 	router.GET("/", func(c *gin.Context) {
 		c.Header("Content-Type", "text/html; charset=utf-8")
-		c.String(http.StatusOK, strings.ReplaceAll(swaggerUIHTML, "__VERSION__", generated_docs.Version))
+		c.String(http.StatusOK, strings.ReplaceAll(indexHTML, "__VERSION__", generated_docs.Version))
 	})
 
 	// CORS.
@@ -82,21 +82,35 @@ func SetupRouter(cfg SetupConfig) *gin.Engine {
 	return router
 }
 
-const swaggerUIHTML = `<!DOCTYPE html>
+// indexHTML is a plain landing page. It deliberately embeds NO third-party
+// script: the previous version pulled swagger-ui from unpkg.com on every load —
+// an unpinned, unverified script from a foreign host running on one of our own
+// origins. The spec is served next door as swagger.json; point any local
+// swagger-ui / editor at it, or read it with curl.
+const indexHTML = `<!DOCTYPE html>
 <html>
 <head>
   <title>role-provider-service API</title>
   <meta charset="utf-8"/>
-  <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist/swagger-ui.css">
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <style>
+    body { font: 15px/1.5 system-ui, sans-serif; margin: 3rem auto; max-width: 42rem; padding: 0 1rem; color: #222; }
+    code { background: #f2f2f2; padding: .1rem .3rem; border-radius: 3px; }
+    footer { margin-top: 3rem; color: #888; font-size: 12px; }
+    @media (prefers-color-scheme: dark) {
+      body { background: #111; color: #eee; }
+      code { background: #222; }
+      a { color: #7ab7ff; }
+    }
+  </style>
 </head>
 <body>
-  <div id="swagger-ui"></div>
-  <script src="https://unpkg.com/swagger-ui-dist/swagger-ui-bundle.js"></script>
-  <script>
-    SwaggerUIBundle({ url: "/swagger.json", dom_id: '#swagger-ui', presets: [SwaggerUIBundle.presets.apis, SwaggerUIBundle.SwaggerUIStandalonePreset] })
-  </script>
-  <!-- __VERSION__ is replaced with the app version at serve time -->
-  <footer style="position:fixed;bottom:6px;right:10px;font:12px system-ui,sans-serif;color:#888;background:rgba(255,255,255,.75);padding:2px 6px;border-radius:4px;z-index:2147483647">v__VERSION__</footer>
+  <h1>role-provider-service</h1>
+  <p>Group and role directory. Every <code>/v1</code> endpoint requires an API token:
+     <code>Authorization: Bearer &lt;token&gt;</code>. Read tokens may query the graph;
+     changing groups, memberships or sync sources needs a write token.</p>
+  <p>API specification: <a href="swagger.json">swagger.json</a> (OpenAPI 2.0).</p>
+  <footer>v__VERSION__</footer>
 </body>
 </html>`
 
