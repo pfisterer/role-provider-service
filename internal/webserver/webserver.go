@@ -71,7 +71,7 @@ func SetupRouter(cfg SetupConfig) *gin.Engine {
 
 	// Route registration.
 	registerGroupRoutes(apiGroup, cfg.GroupSvc, cfg.MaxResponseLimit)
-	registerUserRoutes(apiGroup, cfg.GroupSvc)
+	registerUserRoutes(apiGroup, cfg.GroupSvc, cfg.Store, cfg.MaxResponseLimit)
 	registerSyncRoutes(apiGroup, cfg.Store, cfg.SyncEngine, cfg.Scheduler)
 	registerAdminRoutes(apiGroup, cfg.Store)
 

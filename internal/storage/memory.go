@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -264,6 +265,35 @@ func (s *MemoryStore) GetUserTokens(_ context.Context, email string) ([]string, 
 		}
 	}
 	return tokens, nil
+}
+
+// SearchUsers returns email addresses that contain query, case-insensitively.
+// Email-only by design — see the PostgresStore implementation.
+func (s *MemoryStore) SearchUsers(_ context.Context, query string, limit int) ([]string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	needle := strings.ToLower(strings.TrimSpace(query))
+	seen := map[string]struct{}{}
+	var out []string
+	for _, t := range s.tuples {
+		if t.subjType != "user" {
+			continue
+		}
+		if needle != "" && !strings.Contains(strings.ToLower(t.subjID), needle) {
+			continue
+		}
+		if _, dup := seen[t.subjID]; dup {
+			continue
+		}
+		seen[t.subjID] = struct{}{}
+		out = append(out, t.subjID)
+	}
+	sort.Strings(out)
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
 }
 
 // ── Sources ───────────────────────────────────────────────────────────────────

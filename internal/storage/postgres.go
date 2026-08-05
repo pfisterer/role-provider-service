@@ -87,6 +87,7 @@ type Store interface {
 	GetDirectMembers(ctx context.Context, groupID string) ([]string, error)
 	GetAllMembers(ctx context.Context, groupID string) ([]string, error)
 	GetUserTokens(ctx context.Context, email string) ([]string, error)
+	SearchUsers(ctx context.Context, query string, limit int) ([]string, error)
 
 	// Sources
 	CreateSource(ctx context.Context, s *common.Source) error
@@ -327,6 +328,30 @@ SELECT DISTINCT obj_id FROM user_groups`
 		tokens = append(tokens, common.GroupPrefix+id)
 	}
 	return tokens, nil
+}
+
+// SearchUsers returns email addresses that contain query, case-insensitively.
+//
+// Deliberately email-only: the store knows no names, and the callers must not be
+// able to browse the directory by person. Pattern members (a glob rule such as
+// "*@student.…") have no row here and are therefore not findable — by design,
+// since a glob describes an unbounded set, not people.
+func (s *PostgresStore) SearchUsers(ctx context.Context, query string, limit int) ([]string, error) {
+	q := s.db.WithContext(ctx).Model(&DBTuple{}).
+		Distinct("subj_id").
+		Where("subj_type = 'user'")
+	if trimmed := strings.TrimSpace(query); trimmed != "" {
+		q = q.Where("subj_id ILIKE ?", "%"+trimmed+"%")
+	}
+	if limit > 0 {
+		q = q.Limit(limit)
+	}
+
+	var emails []string
+	if err := q.Order("subj_id ASC").Pluck("subj_id", &emails).Error; err != nil {
+		return nil, err
+	}
+	return emails, nil
 }
 
 // patternSeedGroups returns the IDs of groups whose pattern rule matches the
