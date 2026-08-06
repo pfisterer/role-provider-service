@@ -123,6 +123,34 @@ func NewPostgresStore(dsn string, log *zap.SugaredLogger) (*PostgresStore, error
 		return nil, fmt.Errorf("failed to connect to database: %w", err)
 	}
 
+	// Cap how many connections this service may hold open.
+	//
+	// GORM has no pool of its own — the driver hands gorm.Open a plain *sql.DB, so
+	// the pool is database/sql's, and its default for MaxOpenConns is UNLIMITED.
+	// Gin runs one goroutine per request and nothing here bounds concurrency, so a
+	// burst or a hot loop could open as many connections as there are in-flight
+	// requests.
+	//
+	// That matters because this is a single shared Postgres with max_connections
+	// 100 (3 reserved), and PowerDNS reads its zones from it: exhausting the
+	// instance would not read as "the API is slow", it would read as "DNS stopped
+	// answering". Three services at 10 each leaves the rest of the cluster ample
+	// room, and 10 is far above anything measured (the idle floor is 2).
+	//
+	// MaxIdleConns is raised from the default 2 so a handful of concurrent
+	// requests does not pay for a new connection each.
+	//
+	// Deliberately NOT setting ConnMaxLifetime: the usual Kubernetes argument for
+	// it — stale connections after a Postgres restart or a service-IP change — is
+	// already handled by pgx, whose ResetSession discards closed connections and
+	// pings any that sat idle for more than a second before reuse.
+	sqlDB, err := db.DB()
+	if err != nil {
+		return nil, fmt.Errorf("failed to reach the underlying sql.DB: %w", err)
+	}
+	sqlDB.SetMaxOpenConns(10)
+	sqlDB.SetMaxIdleConns(5)
+
 	if err := db.AutoMigrate(&DBGroup{}, &DBSource{}, &DBSyncLog{}, &DBTuple{}); err != nil {
 		return nil, fmt.Errorf("failed to migrate database schema: %w", err)
 	}
