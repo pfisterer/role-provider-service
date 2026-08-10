@@ -101,6 +101,8 @@ business being reachable from outside.
 
 ## Deployment
 
+**Normally deployed as part of [cloud-self-service](https://github.com/pfisterer/cloud-self-service)**, the umbrella chart that composes this service with the other three and pins it by version — and a pinned chart version pins its `appVersion`, which pins the image tag. Installing this chart on its own works, but then nothing keeps it in step with the services it talks to.
+
 A Helm chart lives in [`helm-chart/`](helm-chart) (deployment + secret, with a
 `values.schema.json` that fails a bad values file at install time instead of at
 runtime). It is deployed via ArgoCD from the `dhbw-deployment` repo. Images go to
@@ -113,11 +115,7 @@ The chart is published as an OCI artifact on every push to `main`:
 helm pull oci://ghcr.io/pfisterer/charts/role-provider-service --version 0.6.5-test.1
 ```
 
-It is normally not installed on its own. The DHBW deployment composes all four
-services with the [cloud-self-service](https://github.com/pfisterer/cloud-self-service)
-umbrella chart, which pins this chart by version — and a pinned chart version
-pins its `appVersion`, which pins the image tag. Values for this chart go under
-its chart name there:
+Values for this chart go under its chart name in the umbrella:
 
 ```yaml
 role-provider-service:
