@@ -56,7 +56,7 @@ that only resolve tokens should be given a read token.
 
 ## Running it locally
 
-**Prerequisites:** Go 1.24+, Node.js (docs/client bundle), optionally
+**Prerequisites:** Go 1.24+, optionally
 [air](https://github.com/air-verse/air) for live reload.
 
 ```bash
