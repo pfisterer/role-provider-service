@@ -107,8 +107,27 @@ runtime). It is deployed via ArgoCD from the `dhbw-deployment` repo. Images go t
 `ghcr.io/pfisterer/role-provider-service`; `X.Y.Z-test.N` is the staging channel,
 plain semver production.
 
+The chart is published as an OCI artifact on every push to `main`:
+
+```sh
+helm pull oci://ghcr.io/pfisterer/charts/role-provider-service --version 0.6.5-test.1
+```
+
+It is normally not installed on its own. The DHBW deployment composes all four
+services with the [cloud-self-service](https://github.com/pfisterer/cloud-self-service)
+umbrella chart, which pins this chart by version — and a pinned chart version
+pins its `appVersion`, which pins the image tag. Values for this chart go under
+its chart name there:
+
+```yaml
+role-provider-service:
+  roleProviderService:
+    ...
+```
+
 ## Related projects
 
+- [cloud-self-service](https://github.com/pfisterer/cloud-self-service) — the umbrella chart that composes all four
 - [openstack-management-api](https://github.com/pfisterer/openstack-management-api) — first consumer
 - [self-service-ui](https://github.com/pfisterer/self-service-ui) — where group search surfaces
 - [dynamic-zones](https://github.com/pfisterer/dynamic-zones) — DNS self-service
