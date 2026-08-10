@@ -1,7 +1,8 @@
 roleProviderService:
   image: ghcr.io/pfisterer/role-provider-service
   imagePullPolicy: Always
-  version: "latest"
+  # Empty -> the chart\'s appVersion is used (see the deployment template).
+  version: ""
   hostname: "role-provider.example.com"
   replicas: 1
   port: 8085
