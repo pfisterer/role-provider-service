@@ -1,3 +1,8 @@
+# Dependency condition of the cloud-self-service umbrella chart, which decides by
+# this key whether to install this chart at all. Set it there, not here: a
+# standalone `helm install` of this chart ignores it entirely.
+enabled: true
+
 roleProviderService:
   image: ghcr.io/pfisterer/role-provider-service
   imagePullPolicy: Always
