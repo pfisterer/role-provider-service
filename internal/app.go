@@ -6,10 +6,10 @@ import (
 	"os"
 	"time"
 
+	"github.com/pfisterer/cloud-self-service-golib/logging"
 	"github.com/pfisterer/role-provider-service/internal/catalog"
 	"github.com/pfisterer/role-provider-service/internal/common"
 	"github.com/pfisterer/role-provider-service/internal/groupmgmt"
-	"github.com/pfisterer/role-provider-service/internal/helper"
 	"github.com/pfisterer/role-provider-service/internal/storage"
 	syncp "github.com/pfisterer/role-provider-service/internal/sync"
 	"github.com/pfisterer/role-provider-service/internal/webserver"
@@ -24,7 +24,7 @@ func RunApplication() {
 		os.Exit(1)
 	}
 
-	_, log := helper.InitLogger(cfg.DevMode)
+	_, log := logging.Init(cfg.DevMode)
 	defer log.Sync() //nolint:errcheck
 	log.Info("Starting role-provider-service")
 

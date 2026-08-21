@@ -5,7 +5,7 @@ import (
 	"os"
 
 	"github.com/joho/godotenv"
-	"github.com/pfisterer/role-provider-service/internal/helper"
+	"github.com/pfisterer/cloud-self-service-golib/envconf"
 )
 
 // AppConfiguration is the top-level service configuration.
@@ -51,23 +51,23 @@ func loadAppConfiguration() (AppConfiguration, error) {
 		}
 	}
 
-	tokens := helper.GetEnvStringSlice("API_TOKENS", nil)
+	tokens := envconf.StringSlice("API_TOKENS", nil)
 	if len(tokens) == 0 {
 		return AppConfiguration{}, fmt.Errorf("API_TOKENS must be set (comma-separated list of valid bearer tokens)")
 	}
 
 	cfg := AppConfiguration{
-		DBType:                   helper.GetEnvString("DB_TYPE", "memory"),
-		DBConnectionString:       helper.GetEnvString("DB_CONNECTION_STRING", "host=localhost user=postgres password=postgres dbname=group_auth_service port=5432 sslmode=disable TimeZone=UTC"),
-		DBAddMockData:            helper.GetEnvString("DB_ADD_MOCK_DATA", "false") == "true",
-		GinBindString:            helper.GetEnvString("API_BIND", ":8085"),
-		DevMode:                  helper.GetEnvString("API_MODE", "production") == "development",
+		DBType:                   envconf.String("DB_TYPE", "memory"),
+		DBConnectionString:       envconf.String("DB_CONNECTION_STRING", "host=localhost user=postgres password=postgres dbname=group_auth_service port=5432 sslmode=disable TimeZone=UTC"),
+		DBAddMockData:            envconf.String("DB_ADD_MOCK_DATA", "false") == "true",
+		GinBindString:            envconf.String("API_BIND", ":8085"),
+		DevMode:                  envconf.String("API_MODE", "production") == "development",
 		APITokens:                tokens,
-		APIWriteTokens:           helper.GetEnvStringSlice("API_WRITE_TOKENS", nil),
-		CORSAllowedOrigins:       helper.GetEnvStringSlice("CORS_ALLOWED_ORIGINS", nil),
-		ServiceTimeoutSeconds:    helper.GetEnvInt("SERVICE_TIMEOUT_SECONDS", 30),
-		MaxResponseLimit:         helper.GetEnvInt("MAX_RESPONSE_LIMIT", 50),
-		GroupCacheRefreshSeconds: helper.GetEnvInt("GROUP_CACHE_REFRESH_SECONDS", 600),
+		APIWriteTokens:           envconf.StringSlice("API_WRITE_TOKENS", nil),
+		CORSAllowedOrigins:       envconf.StringSlice("CORS_ALLOWED_ORIGINS", nil),
+		ServiceTimeoutSeconds:    envconf.Int("SERVICE_TIMEOUT_SECONDS", 30),
+		MaxResponseLimit:         envconf.Int("MAX_RESPONSE_LIMIT", 50),
+		GroupCacheRefreshSeconds: envconf.Int("GROUP_CACHE_REFRESH_SECONDS", 600),
 	}
 
 	return cfg, nil

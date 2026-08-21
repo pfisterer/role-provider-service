@@ -10,9 +10,9 @@ import (
 	"github.com/gin-contrib/cors"
 	ginzap "github.com/gin-contrib/zap"
 	"github.com/gin-gonic/gin"
+	"github.com/pfisterer/cloud-self-service-golib/logging"
 	"github.com/pfisterer/role-provider-service/internal/generated_docs"
 	"github.com/pfisterer/role-provider-service/internal/groupmgmt"
-	"github.com/pfisterer/role-provider-service/internal/helper"
 	"github.com/pfisterer/role-provider-service/internal/storage"
 	syncp "github.com/pfisterer/role-provider-service/internal/sync"
 	"go.uber.org/zap"
@@ -49,7 +49,7 @@ func SetupRouter(cfg SetupConfig) *gin.Engine {
 	}
 
 	// Pipe Gin logs through Zap.
-	ginLogWriter := &helper.ZapWriter{SugarLogger: cfg.Log, Level: cfg.Log.Level()}
+	ginLogWriter := &logging.Writer{Logger: cfg.Log, Level: cfg.Log.Level()}
 	gin.DefaultWriter = ginLogWriter
 	gin.DefaultErrorWriter = ginLogWriter
 	router.Use(ginzap.RecoveryWithZap(cfg.Log.Desugar(), true))
