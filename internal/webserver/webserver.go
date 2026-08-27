@@ -7,9 +7,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gin-contrib/cors"
 	ginzap "github.com/gin-contrib/zap"
 	"github.com/gin-gonic/gin"
+	"github.com/pfisterer/cloud-self-service-golib/ginweb"
 	"github.com/pfisterer/cloud-self-service-golib/logging"
 	"github.com/pfisterer/role-provider-service/internal/generated_docs"
 	"github.com/pfisterer/role-provider-service/internal/groupmgmt"
@@ -30,7 +30,7 @@ type SetupConfig struct {
 	Scheduler        *syncp.Scheduler
 	MaxResponseLimit int // global upper bound on list endpoints; 0 → default of 50
 	// CORSAllowedOrigins are the browser origins allowed to call /v1
-	// cross-origin. Empty means none — see setupCORS.
+	// cross-origin. Empty means none — see ginweb.EnableCORS.
 	CORSAllowedOrigins []string
 }
 
@@ -45,7 +45,7 @@ func SetupRouter(cfg SetupConfig) *gin.Engine {
 	router := gin.New()
 
 	if cfg.DevMode {
-		router.Use(disableCachingMiddleware())
+		router.Use(ginweb.DisableCaching())
 	}
 
 	// Pipe Gin logs through Zap.
@@ -66,7 +66,12 @@ func SetupRouter(cfg SetupConfig) *gin.Engine {
 
 	// CORS.
 	apiGroup := router.Group("/v1")
-	setupCORS(apiGroup, cfg.CORSAllowedOrigins, cfg.Log)
+	ginweb.EnableCORS(apiGroup, ginweb.CORSOptions{
+		AllowedOrigins: cfg.CORSAllowedOrigins,
+		DevMode:        cfg.DevMode,
+		AllowMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
+		Log:            cfg.Log,
+	})
 
 	// Authentication.
 	apiGroup.Use(BearerAuthMiddleware(cfg.APITokens, cfg.APIWriteTokens, cfg.Log))
@@ -120,52 +125,6 @@ const indexHTML = `<!DOCTYPE html>
   <footer>v__VERSION__</footer>
 </body>
 </html>`
-
-// setupCORS restricts cross-origin access to allowedOrigins (exact origin
-// matches). This API is consumed by other services with a static API token, not
-// by a browser, so the default — an empty list, i.e. no cross-origin access at
-// all — is what production runs. The previous version reflected ANY origin and
-// allowed credentials, which is the combination that makes a browser hand an
-// attacker page the answers to authenticated requests.
-func setupCORS(rg *gin.RouterGroup, allowedOrigins []string, log *zap.SugaredLogger) {
-	allowed := make(map[string]bool, len(allowedOrigins))
-	for _, origin := range allowedOrigins {
-		if trimmed := strings.TrimRight(strings.TrimSpace(origin), "/"); trimmed != "" {
-			allowed[trimmed] = true
-		}
-	}
-
-	if len(allowed) == 0 {
-		log.Info("CORS: no allowed origins configured — cross-origin API access is disabled")
-	} else {
-		log.Infof("CORS: allowing cross-origin API access from %v", allowedOrigins)
-	}
-
-	rg.Use(cors.New(cors.Config{
-		AllowOriginFunc:  func(origin string) bool { return allowed[strings.TrimRight(origin, "/")] },
-		AllowCredentials: true,
-		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
-		AllowHeaders:     []string{"Origin", "Content-Type", "Authorization"},
-		MaxAge:           1 * time.Hour,
-	}))
-
-	// Gin runs group middleware only for requests that MATCH a route, and no
-	// handler is registered for OPTIONS — without this catch-all a preflight
-	// would 404 before the CORS middleware ever ran. The handler sets nothing
-	// itself: an allowed origin was already answered 204 with the headers by the
-	// middleware, any other origin was aborted with 403. That is the difference
-	// to the previous version, whose catch-all wrote reflected headers on its own.
-	rg.OPTIONS("/*path", func(c *gin.Context) { c.Status(http.StatusNoContent) })
-}
-
-func disableCachingMiddleware() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		c.Header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
-		c.Header("Pragma", "no-cache")
-		c.Header("Expires", "0")
-		c.Next()
-	}
-}
 
 type capturingWriter struct {
 	gin.ResponseWriter

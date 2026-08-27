@@ -3,13 +3,12 @@ module github.com/pfisterer/role-provider-service
 go 1.25.5
 
 require (
-	github.com/gin-contrib/cors v1.7.7
 	github.com/gin-contrib/zap v1.1.7
 	github.com/gin-gonic/gin v1.12.0
 	github.com/go-ldap/ldif v0.0.0-20260409153546-6de1b99547b6
 	github.com/google/uuid v1.6.0
 	github.com/joho/godotenv v1.5.1
-	github.com/pfisterer/cloud-self-service-golib v0.5.0
+	github.com/pfisterer/cloud-self-service-golib v0.7.0
 	github.com/robfig/cron/v3 v3.0.1
 	go.uber.org/zap v1.28.0
 	gorm.io/driver/postgres v1.6.0
@@ -23,6 +22,7 @@ require (
 	github.com/bytedance/sonic/loader v0.5.1 // indirect
 	github.com/cloudwego/base64x v0.1.7 // indirect
 	github.com/gabriel-vasile/mimetype v1.4.13 // indirect
+	github.com/gin-contrib/cors v1.7.7 // indirect
 	github.com/gin-contrib/sse v1.1.1 // indirect
 	github.com/go-asn1-ber/asn1-ber v1.5.8-0.20250403174932-29230038a667 // indirect
 	github.com/go-ldap/ldap/v3 v3.4.13 // indirect
