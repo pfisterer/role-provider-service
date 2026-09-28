@@ -91,3 +91,16 @@ func TestParseCSV_UnknownHeaderColumn(t *testing.T) {
 		t.Fatal("a misspelt column must be refused, not imported as plain membership")
 	}
 }
+
+// A file saved as "CSV UTF-8" by Excel starts with a byte-order mark; the
+// header must still be recognised, or it would be imported as a group "group".
+func TestParseCSV_ByteOrderMarkHeader(t *testing.T) {
+	const in = "\ufeffgroup,member,description,name,relation\nsg-dski,group:sg-dski-sekretariat,DSKI,,sekretariat\n"
+	tuples, _, err := ParseCSV(strings.NewReader(in))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tuples) != 1 || tuples[0].GroupID != "sg-dski" || tuples[0].Relation != "sekretariat" {
+		t.Fatalf("unexpected tuples %+v", tuples)
+	}
+}

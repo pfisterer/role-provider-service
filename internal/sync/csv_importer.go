@@ -43,6 +43,12 @@ func ParseCSV(r io.Reader) ([]common.TuplePair, map[string]string, error) {
 		}
 		lineNum++
 
+		// Excel's "CSV UTF-8" starts the file with a byte-order mark, which
+		// would otherwise stick to the first cell and hide the header.
+		if lineNum == 1 && len(record) > 0 {
+			record[0] = strings.TrimPrefix(record[0], "\ufeff")
+		}
+
 		if lineNum == 1 && isHeader(record) {
 			cols, err = headerColumns(record)
 			if err != nil {
@@ -101,9 +107,10 @@ func headerColumns(record []string) (csvColumns, error) {
 			cols.description = i
 		case "relation":
 			cols.relation = i
-		case "":
+		case "name", "note", "":
+			// For the human reading the file; the import ignores it.
 		default:
-			return cols, fmt.Errorf("csv header: unknown column %q (known: group, member, description, relation)", name)
+			return cols, fmt.Errorf("csv header: unknown column %q (known: group, member, description, relation, name/note)", name)
 		}
 	}
 	if cols.group < 0 || cols.member < 0 {
