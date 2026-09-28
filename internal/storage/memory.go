@@ -17,6 +17,7 @@ import (
 type memTuple struct {
 	id       uuid.UUID
 	objID    string // group ID (no prefix)
+	relation string // "member" or a configured relation such as "dozent"
 	subjType string // "user" | "group"
 	subjID   string // email or group ID (no prefix)
 	subjRel  string // "member" when subjType == "group", else ""
@@ -140,21 +141,20 @@ func (s *MemoryStore) DeleteGroup(_ context.Context, id string) error {
 
 // ── Members / Tuples ──────────────────────────────────────────────────────────
 
-func (s *MemoryStore) AddMember(_ context.Context, groupID, memberType, memberID string, sourceID *uuid.UUID) error {
+func (s *MemoryStore) AddMember(_ context.Context, groupID, relation, memberType, memberID string, sourceID *uuid.UUID) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	subjRel := ""
-	if memberType == "group" {
-		subjRel = "member"
-	}
+	relation = common.NormalizeRelation(relation)
+	subjRel := subjRelFor(memberType)
 	for _, t := range s.tuples {
-		if t.objID == groupID && t.subjType == memberType && t.subjID == memberID && t.subjRel == subjRel {
+		if t.objID == groupID && t.relation == relation && t.subjType == memberType && t.subjID == memberID && t.subjRel == subjRel {
 			return nil // idempotent
 		}
 	}
 	s.tuples = append(s.tuples, memTuple{
 		id:       uuid.New(),
 		objID:    groupID,
+		relation: relation,
 		subjType: memberType,
 		subjID:   memberID,
 		subjRel:  subjRel,
@@ -163,16 +163,14 @@ func (s *MemoryStore) AddMember(_ context.Context, groupID, memberType, memberID
 	return nil
 }
 
-func (s *MemoryStore) RemoveMember(_ context.Context, groupID, memberType, memberID string) error {
+func (s *MemoryStore) RemoveMember(_ context.Context, groupID, relation, memberType, memberID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	subjRel := ""
-	if memberType == "group" {
-		subjRel = "member"
-	}
+	relation = common.NormalizeRelation(relation)
+	subjRel := subjRelFor(memberType)
 	kept := s.tuples[:0]
 	for _, t := range s.tuples {
-		if t.objID == groupID && t.subjType == memberType && t.subjID == memberID && t.subjRel == subjRel {
+		if t.objID == groupID && t.relation == relation && t.subjType == memberType && t.subjID == memberID && t.subjRel == subjRel {
 			continue
 		}
 		kept = append(kept, t)
@@ -181,86 +179,125 @@ func (s *MemoryStore) RemoveMember(_ context.Context, groupID, memberType, membe
 	return nil
 }
 
-func (s *MemoryStore) GetDirectMembers(_ context.Context, groupID string) ([]string, error) {
+// GetDirectMembers returns the direct members of a group holding relation.
+// "member" (or "") lists every direct tuple, since each relation implies
+// membership; any other relation lists only its own tuples.
+func (s *MemoryStore) GetDirectMembers(_ context.Context, groupID, relation string) ([]string, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	filter := filterFor(common.NormalizeRelation(relation))
+	seen := map[string]struct{}{}
 	var out []string
 	for _, t := range s.tuples {
 		// Skip pattern rules — they are membership rules, not concrete members.
-		if t.objID == groupID && t.subjType != "pattern" {
-			out = append(out, common.BuildToken(t.subjType, t.subjID))
+		if t.objID != groupID || t.subjType == "pattern" || !relationMatches(t.relation, filter) {
+			continue
 		}
+		token := common.BuildToken(t.subjType, t.subjID)
+		if _, dup := seen[token]; dup {
+			continue
+		}
+		seen[token] = struct{}{}
+		out = append(out, token)
 	}
 	return out, nil
 }
 
-// GetAllMembers resolves all transitive members of a group (users + sub-groups) in memory.
-func (s *MemoryStore) GetAllMembers(_ context.Context, groupID string) ([]string, error) {
+// GetAllMembers resolves the transitive members holding relation on a group.
+// "member" (or "") means everyone in the group, whatever their relation. A
+// sub-group contributes all of its members: group:A in B#dozent makes every
+// member of A a dozent of B.
+func (s *MemoryStore) GetAllMembers(_ context.Context, groupID, relation string) ([]string, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
+	type step struct{ group, relation string }
+	visited := map[step]struct{}{}
 	seen := map[string]struct{}{}
-	queue := []string{groupID}
+	queue := []step{{groupID, common.NormalizeRelation(relation)}}
 	var tokens []string
 
 	for len(queue) > 0 {
 		current := queue[0]
 		queue = queue[1:]
+		if _, done := visited[current]; done {
+			continue
+		}
+		visited[current] = struct{}{}
 		for _, t := range s.tuples {
-			if t.objID != current {
+			if t.objID != current.group || t.subjType == "pattern" || !relationMatches(t.relation, filterFor(current.relation)) {
 				continue
-			}
-			if t.subjType == "pattern" {
-				continue // membership rule, not a concrete member
 			}
 			token := common.BuildToken(t.subjType, t.subjID)
-			if _, already := seen[token]; already {
-				continue
+			if _, already := seen[token]; !already {
+				seen[token] = struct{}{}
+				tokens = append(tokens, token)
 			}
-			seen[token] = struct{}{}
-			tokens = append(tokens, token)
 			if t.subjType == "group" {
-				queue = append(queue, t.subjID)
+				queue = append(queue, step{t.subjID, common.RelationMember})
 			}
 		}
 	}
 	return tokens, nil
 }
 
-// GetUserTokens returns the user token + all group tokens for the given email (reverse recursive lookup).
+// GetUserTokens returns the user token, a "group:<id>" token for every group the
+// user is a member of (transitively; any relation counts), and a
+// "group:<id>#<relation>" token for every other relation the user holds.
 func (s *MemoryStore) GetUserTokens(_ context.Context, email string) ([]string, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	tokens := []string{common.UserPrefix + email}
-	seen := map[string]struct{}{email: {}}
-
-	// Seed: find groups the user is directly in, plus groups whose pattern rule
-	// (subjType "pattern") matches the email.
-	queue := []string{}
-	for _, t := range s.tuples {
-		matches := (t.subjType == "user" && t.subjID == email) ||
+	matchesUser := func(t memTuple) bool {
+		return (t.subjType == "user" && t.subjID == email) ||
 			(t.subjType == "pattern" && common.MatchEmailPattern(t.subjID, email))
-		if matches {
-			if _, already := seen[t.objID]; !already {
-				seen[t.objID] = struct{}{}
-				queue = append(queue, t.objID)
-				tokens = append(tokens, common.GroupPrefix+t.objID)
-			}
-		}
 	}
 
-	// Expand: find groups that contain those groups.
+	// Membership: groups the user is directly in (any relation), then every
+	// group that contains one of those.
+	memberOf := map[string]struct{}{}
+	var order []string
+	queue := []string{}
+	add := func(id string) {
+		if _, already := memberOf[id]; !already {
+			memberOf[id] = struct{}{}
+			order = append(order, id)
+			queue = append(queue, id)
+		}
+	}
+	for _, t := range s.tuples {
+		if matchesUser(t) {
+			add(t.objID)
+		}
+	}
 	for len(queue) > 0 {
 		current := queue[0]
 		queue = queue[1:]
 		for _, t := range s.tuples {
 			if t.subjType == "group" && t.subjID == current {
-				if _, already := seen[t.objID]; !already {
-					seen[t.objID] = struct{}{}
-					queue = append(queue, t.objID)
-					tokens = append(tokens, common.GroupPrefix+t.objID)
-				}
+				add(t.objID)
+			}
+		}
+	}
+
+	tokens := []string{common.UserPrefix + email}
+	for _, id := range order {
+		tokens = append(tokens, common.GroupPrefix+id)
+	}
+
+	// Relations beyond membership: held directly, through a pattern, or through
+	// a group the user is a member of.
+	seen := map[string]struct{}{}
+	for _, t := range s.tuples {
+		if t.relation == common.RelationMember {
+			continue
+		}
+		_, viaGroup := memberOf[t.subjID]
+		if matchesUser(t) || (t.subjType == "group" && viaGroup) {
+			token := common.GroupToken(t.objID, t.relation)
+			if _, dup := seen[token]; !dup {
+				seen[token] = struct{}{}
+				tokens = append(tokens, token)
 			}
 		}
 	}
@@ -336,7 +373,7 @@ func (s *MemoryStore) ListSources(_ context.Context) ([]common.Source, error) {
 	return out, nil
 }
 
-func (s *MemoryStore) UpdateSource(_ context.Context, id uuid.UUID, name, schedule, dnEmailRegexp, filePath string) error {
+func (s *MemoryStore) UpdateSource(_ context.Context, id uuid.UUID, name, schedule, dnEmailRegexp, groupRelationRegexp, filePath string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	src, ok := s.sources[id]
@@ -346,6 +383,7 @@ func (s *MemoryStore) UpdateSource(_ context.Context, id uuid.UUID, name, schedu
 	src.Name = name
 	src.Schedule = schedule
 	src.DNEmailRegexp = dnEmailRegexp
+	src.GroupRelationRegexp = groupRelationRegexp
 	src.FilePath = filePath
 	src.UpdatedAt = time.Now().UTC()
 	return nil
@@ -433,18 +471,18 @@ func (s *MemoryStore) ReplaceTuples(_ context.Context, sourceID uuid.UUID, newTu
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	type key struct{ groupID, memberType, memberID string }
+	type key struct{ groupID, relation, memberType, memberID string }
 
 	existingIdx := map[key]int{}
 	for i, t := range s.tuples {
 		if t.sourceID != nil && *t.sourceID == sourceID {
-			existingIdx[key{t.objID, t.subjType, t.subjID}] = i
+			existingIdx[key{t.objID, t.relation, t.subjType, t.subjID}] = i
 		}
 	}
 
 	newSet := map[key]struct{}{}
 	for _, p := range newTuples {
-		k := key{p.GroupID, p.MemberType, p.MemberID}
+		k := key{p.GroupID, common.NormalizeRelation(p.Relation), p.MemberType, p.MemberID}
 		if _, dup := newSet[k]; dup {
 			continue
 		}
@@ -470,17 +508,14 @@ func (s *MemoryStore) ReplaceTuples(_ context.Context, sourceID uuid.UUID, newTu
 		}
 
 		if _, exists := existingIdx[k]; !exists {
-			subjRel := ""
-			if p.MemberType == "group" {
-				subjRel = "member"
-			}
 			sid := sourceID
 			s.tuples = append(s.tuples, memTuple{
 				id:       uuid.New(),
 				objID:    p.GroupID,
+				relation: k.relation,
 				subjType: p.MemberType,
 				subjID:   p.MemberID,
-				subjRel:  subjRel,
+				subjRel:  subjRelFor(p.MemberType),
 				sourceID: &sid,
 			})
 			added++
@@ -491,7 +526,7 @@ func (s *MemoryStore) ReplaceTuples(_ context.Context, sourceID uuid.UUID, newTu
 	kept := s.tuples[:0]
 	for _, t := range s.tuples {
 		if t.sourceID != nil && *t.sourceID == sourceID {
-			k := key{t.objID, t.subjType, t.subjID}
+			k := key{t.objID, t.relation, t.subjType, t.subjID}
 			if _, keep := newSet[k]; !keep {
 				removed++
 				continue
@@ -501,4 +536,27 @@ func (s *MemoryStore) ReplaceTuples(_ context.Context, sourceID uuid.UUID, newTu
 	}
 	s.tuples = kept
 	return
+}
+
+// subjRelFor is the subject relation stored with a tuple: a group subject always
+// means "the members of that group" in this iteration; users and patterns have none.
+func subjRelFor(memberType string) string {
+	if memberType == "group" {
+		return common.RelationMember
+	}
+	return ""
+}
+
+// filterFor turns the relation asked about into a tuple filter: asking for
+// "member" means every relation, since each implies membership.
+func filterFor(relation string) string {
+	if relation == common.RelationMember {
+		return ""
+	}
+	return relation
+}
+
+// relationMatches reports whether a tuple's relation passes the filter ("" = any).
+func relationMatches(tupleRelation, filter string) bool {
+	return filter == "" || tupleRelation == filter
 }

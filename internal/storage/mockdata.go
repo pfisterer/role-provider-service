@@ -19,6 +19,7 @@ func SeedMockData(ctx context.Context, store Store, log *zap.SugaredLogger) erro
 		{ID: "dept_cs_faculty", DisplayName: "CS Faculty Pool", Description: "CS faculty members"},
 		{ID: "cs-student", DisplayName: "CS Students", Description: "Computer science students"},
 		{ID: "dept_bio", DisplayName: "Biology Dept", Description: "Biology department"},
+		{ID: "wwi23seb", DisplayName: "WWI23SEB", Description: "Course with roles (dozent, studierende)"},
 	}
 	for i := range groups {
 		if err := store.CreateGroup(ctx, &groups[i]); err != nil {
@@ -35,7 +36,20 @@ func SeedMockData(ctx context.Context, store Store, log *zap.SugaredLogger) erro
 		{"cs-student@cs.com", "cs-student"},
 	}
 	for _, m := range userMemberships {
-		if err := store.AddMember(ctx, m.groupID, "user", m.email, nil); err != nil {
+		if err := store.AddMember(ctx, m.groupID, common.RelationMember, "user", m.email, nil); err != nil {
+			return err
+		}
+	}
+
+	// A course whose members hold roles, so the dev setup shows relation tokens
+	// ("group:wwi23seb#dozent"). Run with GROUP_RELATIONS=dozent,studierende to
+	// manage them through the API as well; the store itself does not check.
+	courseRoles := []struct{ email, relation string }{
+		{"faculty@cs.example", "dozent"},
+		{"cs-student@cs.com", "studierende"},
+	}
+	for _, m := range courseRoles {
+		if err := store.AddMember(ctx, "wwi23seb", m.relation, "user", m.email, nil); err != nil {
 			return err
 		}
 	}
@@ -58,6 +72,7 @@ func SeedMockData(ctx context.Context, store Store, log *zap.SugaredLogger) erro
 	log.Infow("Mock data seeded",
 		"groups", len(groups),
 		"user_memberships", len(userMemberships),
+		"course_roles", len(courseRoles),
 	)
 	return nil
 }

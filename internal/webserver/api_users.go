@@ -54,7 +54,7 @@ func searchUsers(store storage.Store, maxLimit int) gin.HandlerFunc {
 // getUserTokens godoc
 //
 //	@Summary		Get user tokens
-//	@Description	Returns all tokens for the given email: the user's own token ("user:<email>") plus all group tokens resolved transitively.
+//	@Description	Returns all tokens for the given email: the user's own token ("user:<email>") plus a "group:<id>" token for every group the user is a member of (resolved transitively; every relation implies membership) and a "group:<id>#<relation>" token for every other relation the user holds.
 //	@Tags			users
 //	@Produce		json
 //	@Security		Bearer

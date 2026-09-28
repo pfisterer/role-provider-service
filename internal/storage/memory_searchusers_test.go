@@ -11,11 +11,11 @@ func TestMemorySearchUsers(t *testing.T) {
 	ctx := context.Background()
 	s := NewMemoryStore(zap.NewNop().Sugar())
 
-	must(t, s.AddMember(ctx, "sg-dski", "user", "dennis.pfisterer@dhbw.de", nil))
-	must(t, s.AddMember(ctx, "leitung-sg-dski", "user", "dennis.pfisterer@dhbw.de", nil))
-	must(t, s.AddMember(ctx, "sg-wi", "user", "clemens.martin@dhbw.de", nil))
-	must(t, s.AddMember(ctx, "sg-wi", "group", "leitung-sg-wi", nil))
-	must(t, s.AddMember(ctx, "studierende", "pattern", "*@student.dhbw-mannheim.de", nil))
+	must(t, s.AddMember(ctx, "sg-dski", "member", "user", "dennis.pfisterer@dhbw.de", nil))
+	must(t, s.AddMember(ctx, "leitung-sg-dski", "member", "user", "dennis.pfisterer@dhbw.de", nil))
+	must(t, s.AddMember(ctx, "sg-wi", "member", "user", "clemens.martin@dhbw.de", nil))
+	must(t, s.AddMember(ctx, "sg-wi", "member", "group", "leitung-sg-wi", nil))
+	must(t, s.AddMember(ctx, "studierende", "member", "pattern", "*@student.dhbw-mannheim.de", nil))
 
 	all, err := s.SearchUsers(ctx, "", 0)
 	if err != nil {

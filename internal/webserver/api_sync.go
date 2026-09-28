@@ -54,6 +54,9 @@ type createSourceRequest struct {
 	Schedule      string `json:"schedule"`
 	DNEmailRegexp string `json:"dn_email_regexp"`
 	FilePath      string `json:"file_path"`
+	// GroupRelationRegexp (LDIF only) maps a group CN onto a relation of another
+	// group via the named captures "group" and "relation".
+	GroupRelationRegexp string `json:"group_relation_regexp"`
 }
 
 // createSource godoc
@@ -84,12 +87,13 @@ func createSource(store storage.Store, scheduler *syncp.Scheduler) gin.HandlerFu
 			return
 		}
 		src := &common.Source{
-			ID:            uuid.New(),
-			Name:          req.Name,
-			Type:          typ,
-			Schedule:      req.Schedule,
-			DNEmailRegexp: req.DNEmailRegexp,
-			FilePath:      req.FilePath,
+			ID:                  uuid.New(),
+			Name:                req.Name,
+			Type:                typ,
+			Schedule:            req.Schedule,
+			DNEmailRegexp:       req.DNEmailRegexp,
+			GroupRelationRegexp: req.GroupRelationRegexp,
+			FilePath:            req.FilePath,
 		}
 		if err := store.CreateSource(c.Request.Context(), src); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -140,6 +144,9 @@ type updateSourceRequest struct {
 	Schedule      string `json:"schedule"`
 	DNEmailRegexp string `json:"dn_email_regexp"`
 	FilePath      string `json:"file_path"`
+	// GroupRelationRegexp (LDIF only) maps a group CN onto a relation of another
+	// group via the named captures "group" and "relation".
+	GroupRelationRegexp string `json:"group_relation_regexp"`
 }
 
 // updateSource godoc
@@ -170,7 +177,7 @@ func updateSource(store storage.Store, scheduler *syncp.Scheduler) gin.HandlerFu
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
-		if err := store.UpdateSource(c.Request.Context(), id, req.Name, req.Schedule, req.DNEmailRegexp, req.FilePath); err != nil {
+		if err := store.UpdateSource(c.Request.Context(), id, req.Name, req.Schedule, req.DNEmailRegexp, req.GroupRelationRegexp, req.FilePath); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}

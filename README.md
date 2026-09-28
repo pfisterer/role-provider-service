@@ -28,6 +28,12 @@ A **Zanzibar-style tuple store** with a small HTTP API:
   nest, and membership resolves transitively), or **patterns**
   (`*@student.example.edu`), which is how "all students" stays a rule instead of
   50 000 rows.
+- **Relations** say what a member is in a group, beyond being in it: a course
+  `wwi23seb` can have a `dozent` and `studierende`. The relations are configured
+  (`GROUP_RELATIONS`), every one implies membership, and a user holding one gets
+  `group:wwi23seb#dozent` in addition to `group:wwi23seb` — so a rule on the
+  plain group token keeps meaning "everyone in the course". A group as member of
+  `wwi23seb#studierende` gives the relation to all of that group's members.
 - **Token resolution** is the primary query: given an address, return every token
   that person holds — direct, inherited through nesting, and matched by pattern.
   That single list is what a consuming service checks its rules against.
@@ -40,16 +46,18 @@ Group search is answered from an in-memory snapshot of the group catalog, reload
 
 ## Import formats
 
-A **CSV** source has one membership per row: `group,member[,description]`. If the first row's first column is `group` or `group_id`, it is a header and skipped; lines starting with `#` are comments, rows with fewer than two columns are ignored, and a `group:` prefix in the first column is dropped. The member is `user:<email>`, `group:<name>` or `pattern:<glob>` (`*` matches any run of characters, case-insensitive); a bare value counts as a user if it contains `@` and as a group otherwise. The optional description belongs to the group, so the last non-empty one wins.
+A **CSV** source has one membership per row: `group,member[,description]`. If the first row's first column is `group` or `group_id`, it is a header: it names the columns (`group`, `member`, `description`, `relation`; any other name is an error) and is skipped. A `relation` column gives each row's relation; rows without one, and files without the column, are plain memberships. A relation that is not configured fails the whole sync, with the reason in the sync log; lines starting with `#` are comments, rows with fewer than two columns are ignored, and a `group:` prefix in the first column is dropped. The member is `user:<email>`, `group:<name>` or `pattern:<glob>` (`*` matches any run of characters, case-insensitive); a bare value counts as a user if it contains `@` and as a group otherwise. The optional description belongs to the group, so the last non-empty one wins.
 
 ```csv
-group,member,description
-dept_cs_faculty,alice@example.edu,CS faculty members
-dept_cs_admin,group:dept_cs_faculty
-students,pattern:*@student.example.edu,All students
+group,member,description,relation
+dept_cs_faculty,alice@example.edu,CS faculty members,
+dept_cs_admin,group:dept_cs_faculty,,
+students,pattern:*@student.example.edu,All students,
+wwi23seb,bob@example.edu,Course WWI23SEB,dozent
+wwi23seb,group:wwi23seb-kurs,,studierende
 ```
 
-An **LDIF** source reads entries whose `objectClass` is `groupOfNames`, `groupOfUniqueNames`, `posixGroup` or `group`. The group name is the first `cn` of the entry's DN, its `description` attribute becomes the group description, and each `member`/`uniqueMember` DN is turned into an address by the source's `dn_email_regexp` (required, first capture group, e.g. `mail=([^,]+)`). DNs the expression does not match are skipped.
+An **LDIF** source reads entries whose `objectClass` is `groupOfNames`, `groupOfUniqueNames`, `posixGroup` or `group`. The group name is the first `cn` of the entry's DN, its `description` attribute becomes the group description, and each `member`/`uniqueMember` DN is turned into an address by the source's `dn_email_regexp` (required, first capture group, e.g. `mail=([^,]+)`). DNs the expression does not match are skipped. An optional `group_relation_regexp` turns LDAP groups into relations of another group: it is matched against the CN, and its named captures `group` and `relation` give the target — `^(?P<group>.+)-(?P<relation>dozent)$` makes `cn=wwi23seb-dozent` the `dozent` relation of `wwi23seb`. A CN it does not match stays a plain group, and a relation group's description is not applied to the target group.
 
 ## API
 
@@ -89,6 +97,7 @@ With `DB_TYPE=memory` and `DB_ADD_MOCK_DATA=true` the service starts with a smal
 | `DB_CONNECTION_STRING` | local Postgres DSN | Used when `DB_TYPE=postgres` |
 | `DB_ADD_MOCK_DATA` | `false` | Seed example groups and identities |
 | `GROUP_CACHE_REFRESH_SECONDS` | `600` | Backstop interval for reloading the group search snapshot; `<= 0` disables it |
+| `GROUP_RELATIONS` | *(empty)* | Relations a group can carry besides `member`, comma-separated (e.g. `dozent,studierende`); names are lowercase letters, digits, `-`, `_`. `GET /v1/relations` lists them |
 | `MAX_RESPONSE_LIMIT` | `50` | Cap on results per group or user search |
 | `SERVICE_TIMEOUT_SECONDS` | `30` | Per-request timeout |
 

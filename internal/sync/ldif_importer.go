@@ -19,13 +19,23 @@ import (
 //	"mail=([^,]+)"            → extracts "user@dhbw.de" from "mail=user@dhbw.de,ou=..."
 //	"uid=([^,@]+@[^,]+)"      → extracts email-shaped uid values
 //	"uid=([^,]+)"             → extracts uid (suitable if uids are email addresses)
-func ParseLDIF(r io.Reader, dnEmailRegexp string) ([]common.TuplePair, map[string]string, error) {
+//
+// groupRelationRegexp (optional) maps an LDAP group onto a relation of another
+// group: matched against the CN, its named captures "group" and "relation"
+// give the target. `^(?P<group>.+)-(?P<relation>dozent|studierende)$` turns
+// cn=wwi23seb-dozent into wwi23seb#dozent. A CN that does not match stays a
+// plain group with "member" tuples.
+func ParseLDIF(r io.Reader, dnEmailRegexp, groupRelationRegexp string) ([]common.TuplePair, map[string]string, error) {
 	re, err := regexp.Compile(dnEmailRegexp)
 	if err != nil {
 		return nil, nil, fmt.Errorf("invalid dn_email_regexp %q: %w", dnEmailRegexp, err)
 	}
 	if re.NumSubexp() < 1 {
 		return nil, nil, fmt.Errorf("dn_email_regexp %q must contain at least one capture group", dnEmailRegexp)
+	}
+	relRe, err := compileGroupRelationRegexp(groupRelationRegexp)
+	if err != nil {
+		return nil, nil, err
 	}
 
 	l := &gorldif.LDIF{}
@@ -51,8 +61,11 @@ func ParseLDIF(r io.Reader, dnEmailRegexp string) ([]common.TuplePair, map[strin
 		}
 		// Strip accidental "group:" prefix.
 		groupID = strings.TrimPrefix(groupID, common.GroupPrefix)
+		groupID, relation := splitByRelationRegexp(relRe, groupID)
 
-		if desc := strings.TrimSpace(firstValue(e.GetAttributeValues("description"))); desc != "" {
+		// A relation group describes the role, not the group it points at, so
+		// only a plain group's description lands on the group.
+		if desc := strings.TrimSpace(firstValue(e.GetAttributeValues("description"))); desc != "" && relation == common.RelationMember {
 			descriptions[groupID] = desc
 		}
 
@@ -68,12 +81,46 @@ func ParseLDIF(r io.Reader, dnEmailRegexp string) ([]common.TuplePair, map[strin
 			}
 			tuples = append(tuples, common.TuplePair{
 				GroupID:    groupID,
+				Relation:   relation,
 				MemberType: "user",
 				MemberID:   email,
 			})
 		}
 	}
 	return tuples, descriptions, nil
+}
+
+// compileGroupRelationRegexp compiles the optional CN→relation mapping and
+// checks it names both captures; "" means no mapping.
+func compileGroupRelationRegexp(expr string) (*regexp.Regexp, error) {
+	if expr == "" {
+		return nil, nil
+	}
+	re, err := regexp.Compile(expr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid group_relation_regexp %q: %w", expr, err)
+	}
+	if re.SubexpIndex("group") < 0 || re.SubexpIndex("relation") < 0 {
+		return nil, fmt.Errorf("group_relation_regexp %q must have named captures (?P<group>…) and (?P<relation>…)", expr)
+	}
+	return re, nil
+}
+
+// splitByRelationRegexp returns the target group and relation for a CN.
+func splitByRelationRegexp(re *regexp.Regexp, cn string) (group, relation string) {
+	if re == nil {
+		return cn, common.RelationMember
+	}
+	m := re.FindStringSubmatch(cn)
+	if m == nil {
+		return cn, common.RelationMember
+	}
+	group = m[re.SubexpIndex("group")]
+	relation = m[re.SubexpIndex("relation")]
+	if group == "" || relation == "" {
+		return cn, common.RelationMember
+	}
+	return group, relation
 }
 
 // firstValue returns the first entry of vals, or "" when there is none.

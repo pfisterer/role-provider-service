@@ -14,6 +14,14 @@ const (
 	// every email matching the glob is a member of the group.
 	PatternPrefix = "pattern:"
 
+	// RelationMember is the relation every group has and every other relation
+	// implies: holding "dozent" in a course makes you a member of it too.
+	RelationMember = "member"
+	// RelationSeparator joins a group and a relation in a token:
+	// "group:wwi23seb#dozent". Membership itself has no suffix ("group:wwi23seb"),
+	// so the tokens consumers already compare keep their meaning.
+	RelationSeparator = "#"
+
 	SourceTypeCSV  = "csv"
 	SourceTypeLDIF = "ldif"
 
@@ -35,16 +43,22 @@ type Group struct {
 
 // Source represents a sync source (CSV or LDIF file).
 type Source struct {
-	ID             uuid.UUID  `json:"id"`
-	Name           string     `json:"name"`
-	Type           string     `json:"type"` // "csv" | "ldif"
-	Schedule       string     `json:"schedule,omitempty"`
-	DNEmailRegexp  string     `json:"dn_email_regexp,omitempty"`
-	FilePath       string     `json:"file_path,omitempty"`
-	LastSyncedAt   *time.Time `json:"last_synced_at,omitempty"`
-	LastSyncStatus string     `json:"last_sync_status,omitempty"`
-	CreatedAt      time.Time  `json:"created_at"`
-	UpdatedAt      time.Time  `json:"updated_at"`
+	ID            uuid.UUID `json:"id"`
+	Name          string    `json:"name"`
+	Type          string    `json:"type"` // "csv" | "ldif"
+	Schedule      string    `json:"schedule,omitempty"`
+	DNEmailRegexp string    `json:"dn_email_regexp,omitempty"`
+	// GroupRelationRegexp (LDIF only) turns an LDAP group into a relation on
+	// another group: matched against the CN, its named captures "group" and
+	// "relation" name the target, e.g. `^(?P<group>.+)-(?P<relation>dozent)$`
+	// maps "wwi23seb-dozent" to wwi23seb#dozent. A CN that does not match stays
+	// a plain group.
+	GroupRelationRegexp string     `json:"group_relation_regexp,omitempty"`
+	FilePath            string     `json:"file_path,omitempty"`
+	LastSyncedAt        *time.Time `json:"last_synced_at,omitempty"`
+	LastSyncStatus      string     `json:"last_sync_status,omitempty"`
+	CreatedAt           time.Time  `json:"created_at"`
+	UpdatedAt           time.Time  `json:"updated_at"`
 }
 
 // SyncLog records the result of a single sync run.
@@ -61,6 +75,7 @@ type SyncLog struct {
 // TuplePair is a single group→member relationship used by the sync engine.
 type TuplePair struct {
 	GroupID    string // raw group name, no "group:" prefix
+	Relation   string // "member" or one of the configured relations; "" means "member"
 	MemberType string // "user" or "group"
 	MemberID   string // email or group name, no prefix
 }
@@ -83,4 +98,31 @@ func ParseToken(token string) (typ, id string) {
 // BuildToken builds "group:<id>" or "user:<id>" from parts.
 func BuildToken(typ, id string) string {
 	return typ + ":" + id
+}
+
+// SplitGroupRelation splits a group id as it appears after "group:" into the
+// group and its relation: "wwi23seb#dozent" → ("wwi23seb", "dozent"),
+// "wwi23seb" → ("wwi23seb", "member").
+func SplitGroupRelation(id string) (group, relation string) {
+	if g, rel, ok := strings.Cut(id, RelationSeparator); ok {
+		return g, rel
+	}
+	return id, RelationMember
+}
+
+// GroupToken builds the token for a relation on a group. Membership is the
+// plain "group:<id>", so a consumer that only knows groups sees no change.
+func GroupToken(groupID, relation string) string {
+	if relation == "" || relation == RelationMember {
+		return GroupPrefix + groupID
+	}
+	return GroupPrefix + groupID + RelationSeparator + relation
+}
+
+// NormalizeRelation maps the empty relation to "member".
+func NormalizeRelation(relation string) string {
+	if relation == "" {
+		return RelationMember
+	}
+	return relation
 }

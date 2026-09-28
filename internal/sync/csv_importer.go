@@ -9,11 +9,19 @@ import (
 	"github.com/pfisterer/role-provider-service/internal/common"
 )
 
-// ParseCSV reads a two-column CSV (group, user_email) and returns TuplePairs
-// plus the group descriptions found in the file.
-// The header row is detected automatically and skipped.
-// An optional third column holds the group description; it is per group, so the
-// last non-empty value for a group wins.
+// ParseCSV reads a CSV of group memberships and returns TuplePairs plus the
+// group descriptions found in the file.
+//
+// Without a header the columns are group, member and an optional description.
+// A header row (first cell "group" or "group_id") is skipped and names the
+// columns instead, which is how the optional "relation" column is recognised:
+//
+//	group,member,description,relation
+//	wwi23seb,anna@dhbw.de,Kurs WWI23SEB,dozent
+//
+// A row without a relation is a plain membership, so files written before
+// relations existed import unchanged. The description is per group: the last
+// non-empty value for a group wins.
 func ParseCSV(r io.Reader) ([]common.TuplePair, map[string]string, error) {
 	reader := csv.NewReader(r)
 	reader.TrimLeadingSpace = true
@@ -22,6 +30,7 @@ func ParseCSV(r io.Reader) ([]common.TuplePair, map[string]string, error) {
 
 	var tuples []common.TuplePair
 	descriptions := map[string]string{}
+	cols := csvColumns{group: 0, member: 1, description: 2, relation: -1}
 	lineNum := 0
 
 	for {
@@ -34,17 +43,16 @@ func ParseCSV(r io.Reader) ([]common.TuplePair, map[string]string, error) {
 		}
 		lineNum++
 
-		if len(record) < 2 {
+		if lineNum == 1 && isHeader(record) {
+			cols, err = headerColumns(record)
+			if err != nil {
+				return nil, nil, err
+			}
 			continue
 		}
 
-		group := strings.TrimSpace(record[0])
-		member := strings.TrimSpace(record[1])
-
-		// Skip header row.
-		if lineNum == 1 && (strings.EqualFold(group, "group") || strings.EqualFold(group, "group_id")) {
-			continue
-		}
+		group := strings.TrimSpace(cell(record, cols.group))
+		member := strings.TrimSpace(cell(record, cols.member))
 		if group == "" || member == "" {
 			continue
 		}
@@ -52,21 +60,64 @@ func ParseCSV(r io.Reader) ([]common.TuplePair, map[string]string, error) {
 		// Strip "group:" prefix if present in the group column.
 		group = strings.TrimPrefix(group, common.GroupPrefix)
 
-		if len(record) > 2 {
-			if desc := strings.TrimSpace(record[2]); desc != "" {
-				descriptions[group] = desc
-			}
+		if desc := strings.TrimSpace(cell(record, cols.description)); desc != "" {
+			descriptions[group] = desc
 		}
 
 		// Determine member type.
 		memberType, memberID := resolveMember(member)
 		tuples = append(tuples, common.TuplePair{
 			GroupID:    group,
+			Relation:   common.NormalizeRelation(strings.TrimSpace(cell(record, cols.relation))),
 			MemberType: memberType,
 			MemberID:   memberID,
 		})
 	}
 	return tuples, descriptions, nil
+}
+
+// csvColumns holds the index of each known column; -1 means absent.
+type csvColumns struct{ group, member, description, relation int }
+
+func isHeader(record []string) bool {
+	if len(record) == 0 {
+		return false
+	}
+	first := strings.TrimSpace(record[0])
+	return strings.EqualFold(first, "group") || strings.EqualFold(first, "group_id")
+}
+
+// headerColumns maps the header names to indexes. Unknown names are an error:
+// a misspelt "relaton" column would otherwise import everyone as a plain member.
+func headerColumns(record []string) (csvColumns, error) {
+	cols := csvColumns{group: -1, member: -1, description: -1, relation: -1}
+	for i, name := range record {
+		switch strings.ToLower(strings.TrimSpace(name)) {
+		case "group", "group_id":
+			cols.group = i
+		case "member", "user", "user_email":
+			cols.member = i
+		case "description":
+			cols.description = i
+		case "relation":
+			cols.relation = i
+		case "":
+		default:
+			return cols, fmt.Errorf("csv header: unknown column %q (known: group, member, description, relation)", name)
+		}
+	}
+	if cols.group < 0 || cols.member < 0 {
+		return cols, fmt.Errorf("csv header must name a group and a member column")
+	}
+	return cols, nil
+}
+
+// cell returns record[i], or "" when the column is absent or the row is short.
+func cell(record []string, i int) string {
+	if i < 0 || i >= len(record) {
+		return ""
+	}
+	return record[i]
 }
 
 // resolveMember returns (type, id) from a member string.

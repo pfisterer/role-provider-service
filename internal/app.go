@@ -66,10 +66,12 @@ func RunApplication() {
 
 	// Service layer.
 	timeout := time.Duration(cfg.ServiceTimeoutSeconds) * time.Second
-	groupSvc := groupmgmt.NewService(store, groupCache, timeout, log)
+	// Validated in loadAppConfiguration already.
+	relations, _ := common.NewRelations(cfg.GroupRelations)
+	groupSvc := groupmgmt.NewService(store, groupCache, relations, timeout, log)
 
 	// Sync engine + scheduler.
-	engine := syncp.NewEngine(store, log)
+	engine := syncp.NewEngine(store, relations, log)
 	engine.SetAfterSync(func(ctx context.Context) {
 		if err := groupCache.Refresh(ctx); err != nil {
 			log.Warnw("group cache refresh after sync failed", zap.Error(err))

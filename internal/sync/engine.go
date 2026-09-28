@@ -16,15 +16,16 @@ import (
 
 // Engine orchestrates sync runs for a single source.
 type Engine struct {
-	store storage.Store
-	log   *zap.SugaredLogger
+	store     storage.Store
+	relations common.Relations
+	log       *zap.SugaredLogger
 	// afterSync, if set, is called after a successful sync (e.g. to refresh the
 	// group search cache so imported groups are searchable immediately).
 	afterSync func(context.Context)
 }
 
-func NewEngine(store storage.Store, log *zap.SugaredLogger) *Engine {
-	return &Engine{store: store, log: log}
+func NewEngine(store storage.Store, relations common.Relations, log *zap.SugaredLogger) *Engine {
+	return &Engine{store: store, relations: relations, log: log}
 }
 
 // SetAfterSync registers a callback invoked after each successful sync.
@@ -50,6 +51,9 @@ func (e *Engine) RunSync(ctx context.Context, sourceID uuid.UUID, content []byte
 	}
 
 	tuples, descriptions, parseErr := e.parseTuples(src, content)
+	if parseErr == nil {
+		parseErr = e.checkRelations(tuples)
+	}
 	if parseErr != nil {
 		now := time.Now()
 		logEntry.FinishedAt = &now
@@ -85,6 +89,20 @@ func (e *Engine) RunSync(ctx context.Context, sourceID uuid.UUID, content []byte
 	return nil
 }
 
+// checkRelations refuses the whole import when a tuple names a relation that is
+// not configured: dropping it silently would hand out less access than the
+// source says, with nothing to show why. The sync log records the error.
+func (e *Engine) checkRelations(tuples []common.TuplePair) error {
+	for i := range tuples {
+		rel, err := e.relations.Check(tuples[i].Relation)
+		if err != nil {
+			return fmt.Errorf("group %q: %w", tuples[i].GroupID, err)
+		}
+		tuples[i].Relation = rel
+	}
+	return nil
+}
+
 // parseTuples reads the data (from content bytes or file path) and parses it
 // into tuples plus the group descriptions carried by the source.
 func (e *Engine) parseTuples(src *common.Source, content []byte) ([]common.TuplePair, map[string]string, error) {
@@ -109,7 +127,7 @@ func (e *Engine) parseTuples(src *common.Source, content []byte) ([]common.Tuple
 		if src.DNEmailRegexp == "" {
 			return nil, nil, fmt.Errorf("ldif source requires dn_email_regexp to be set")
 		}
-		return ParseLDIF(r, src.DNEmailRegexp)
+		return ParseLDIF(r, src.DNEmailRegexp, src.GroupRelationRegexp)
 	default:
 		return nil, nil, fmt.Errorf("unsupported source type %q", src.Type)
 	}

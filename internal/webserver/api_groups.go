@@ -18,6 +18,24 @@ func registerGroupRoutes(rg *gin.RouterGroup, svc *groupmgmt.Service, maxLimit i
 	g.GET("/:token/members", listMembers(svc))
 	g.POST("/:token/members", write, addMember(svc))
 	g.DELETE("/:token/members/*member", write, removeMember(svc))
+	rg.GET("/relations", listRelations(svc))
+}
+
+// listRelations godoc
+//
+//	@Summary		List group relations
+//	@Description	Returns the relations a group can carry, "member" first. Every relation implies membership; a user holding relation R in group G gets the token "group:G#R" in addition to "group:G".
+//	@Tags			groups
+//	@Produce		json
+//	@Security		Bearer
+//	@Success		200	{array}		string			"Relation names"
+//	@Failure		401	{object}	map[string]any	"Unauthorized"
+//	@ID				listRelations
+//	@Router			/v1/relations [get]
+func listRelations(svc *groupmgmt.Service) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.JSON(http.StatusOK, svc.Relations())
+	}
 }
 
 // listGroups godoc
@@ -183,13 +201,15 @@ func deleteGroup(svc *groupmgmt.Service) gin.HandlerFunc {
 // listMembers godoc
 //
 //	@Summary		List group members
-//	@Description	Returns all members of a group. By default resolves members transitively (recursive=true). Set recursive=false for direct members only.
+//	@Description	Returns the members of a group holding a relation (default "member", i.e. everyone in the group — every relation implies membership). By default resolves members transitively (recursive=true); a sub-group contributes all of its members. Set recursive=false for direct members only.
 //	@Tags			groups
 //	@Produce		json
 //	@Security		Bearer
 //	@Param			token		path		string	true	"Group token"
 //	@Param			recursive	query		bool	false	"Expand sub-groups recursively"	default(true)
+//	@Param			relation	query		string	false	"Relation to list (see /v1/relations)"	default(member)
 //	@Success		200			{array}		string	"List of member tokens"
+//	@Failure		400			{object}	map[string]any	"Unknown relation"
 //	@Failure		401			{object}	map[string]any	"Unauthorized"
 //	@Failure		404			{object}	map[string]any	"Not found"
 //	@Failure		500			{object}	map[string]any	"Internal server error"
@@ -198,7 +218,7 @@ func deleteGroup(svc *groupmgmt.Service) gin.HandlerFunc {
 func listMembers(svc *groupmgmt.Service) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		recursive := c.Query("recursive") != "false"
-		members, err := svc.GetAllMembers(c.Request.Context(), c.Param("token"), recursive)
+		members, err := svc.GetAllMembers(c.Request.Context(), c.Param("token"), c.Query("relation"), recursive)
 		if err != nil {
 			respondError(c, err)
 			return
@@ -209,12 +229,14 @@ func listMembers(svc *groupmgmt.Service) gin.HandlerFunc {
 
 type addMemberRequest struct {
 	Member string `json:"member" binding:"required"`
+	// Relation the member gets in the group; empty means "member".
+	Relation string `json:"relation,omitempty"`
 }
 
 // addMember godoc
 //
 //	@Summary		Add member to group
-//	@Description	Adds a user or group token as a direct member of the group.
+//	@Description	Adds a user or group token to the group with a relation (default "member"). A group token as member means all of that group's members hold the relation.
 //	@Tags			groups
 //	@Accept			json
 //	@Security		Bearer
@@ -234,7 +256,7 @@ func addMember(svc *groupmgmt.Service) gin.HandlerFunc {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
-		if err := svc.AddMember(c.Request.Context(), c.Param("token"), req.Member); err != nil {
+		if err := svc.AddMember(c.Request.Context(), c.Param("token"), req.Relation, req.Member); err != nil {
 			respondError(c, err)
 			return
 		}
@@ -245,11 +267,12 @@ func addMember(svc *groupmgmt.Service) gin.HandlerFunc {
 // removeMember godoc
 //
 //	@Summary		Remove member from group
-//	@Description	Removes a user or group token from the group's direct membership.
+//	@Description	Removes one relation (default "member") of a user or group token from the group. Other relations the member holds stay.
 //	@Tags			groups
 //	@Security		Bearer
 //	@Param			token	path	string	true	"Group token"
 //	@Param			member	path	string	true	"Member token to remove (e.g. user:email or group:id)"
+//	@Param			relation	query	string	false	"Relation to remove"	default(member)
 //	@Success		204		"No content"
 //	@Failure		401		{object}	map[string]any	"Unauthorized"
 //	@Failure		404		{object}	map[string]any	"Not found"
@@ -263,7 +286,7 @@ func removeMember(svc *groupmgmt.Service) gin.HandlerFunc {
 		if len(member) > 0 && member[0] == '/' {
 			member = member[1:]
 		}
-		if err := svc.RemoveMember(c.Request.Context(), c.Param("token"), member); err != nil {
+		if err := svc.RemoveMember(c.Request.Context(), c.Param("token"), c.Query("relation"), member); err != nil {
 			respondError(c, err)
 			return
 		}

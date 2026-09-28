@@ -24,16 +24,31 @@ var ErrAlreadyExists = errors.New("already exists")
 // ErrInvalidToken is returned when a token string has an invalid format.
 var ErrInvalidToken = fmt.Errorf("invalid token: must start with '%s' or '%s'", common.GroupPrefix, common.UserPrefix)
 
+// ErrInvalidRelation is returned for a relation that is not configured.
+var ErrInvalidRelation = errors.New("invalid relation")
+
 // Service handles all group and member management operations.
 type Service struct {
-	store   storage.Store
-	cache   *catalog.GroupCache
-	timeout time.Duration
-	log     *zap.SugaredLogger
+	store     storage.Store
+	cache     *catalog.GroupCache
+	relations common.Relations
+	timeout   time.Duration
+	log       *zap.SugaredLogger
 }
 
-func NewService(store storage.Store, cache *catalog.GroupCache, timeout time.Duration, log *zap.SugaredLogger) *Service {
-	return &Service{store: store, cache: cache, timeout: timeout, log: log}
+func NewService(store storage.Store, cache *catalog.GroupCache, relations common.Relations, timeout time.Duration, log *zap.SugaredLogger) *Service {
+	return &Service{store: store, cache: cache, relations: relations, timeout: timeout, log: log}
+}
+
+// Relations lists the relations a group can carry, "member" first.
+func (s *Service) Relations() []string { return s.relations.List() }
+
+func (s *Service) checkRelation(relation string) (string, error) {
+	rel, err := s.relations.Check(relation)
+	if err != nil {
+		return "", fmt.Errorf("%w: %v", ErrInvalidRelation, err)
+	}
+	return rel, nil
 }
 
 func (s *Service) ctx(parent context.Context) (context.Context, context.CancelFunc) {
@@ -151,10 +166,14 @@ func (s *Service) DeleteGroup(ctx context.Context, token string) error {
 
 // ── Members ───────────────────────────────────────────────────────────────────
 
-// AddMember adds a member (user or group token) to the target group.
-// memberToken must be "user:<email>" or "group:<name>".
-func (s *Service) AddMember(ctx context.Context, groupToken, memberToken string) error {
+// AddMember adds a member (user or group token) to the target group with the
+// given relation ("" = member). memberToken must be "user:<email>" or "group:<name>".
+func (s *Service) AddMember(ctx context.Context, groupToken, relation, memberToken string) error {
 	_, groupID, err := parseGroupToken(groupToken)
+	if err != nil {
+		return err
+	}
+	relation, err = s.checkRelation(relation)
 	if err != nil {
 		return err
 	}
@@ -172,12 +191,16 @@ func (s *Service) AddMember(ctx context.Context, groupToken, memberToken string)
 		}
 		return err
 	}
-	return s.store.AddMember(ctx, groupID, memberType, memberID, nil)
+	return s.store.AddMember(ctx, groupID, relation, memberType, memberID, nil)
 }
 
-// RemoveMember removes a member from the target group.
-func (s *Service) RemoveMember(ctx context.Context, groupToken, memberToken string) error {
+// RemoveMember removes a member's relation ("" = member) from the target group.
+func (s *Service) RemoveMember(ctx context.Context, groupToken, relation, memberToken string) error {
 	_, groupID, err := parseGroupToken(groupToken)
+	if err != nil {
+		return err
+	}
+	relation, err = s.checkRelation(relation)
 	if err != nil {
 		return err
 	}
@@ -187,21 +210,26 @@ func (s *Service) RemoveMember(ctx context.Context, groupToken, memberToken stri
 	}
 	ctx, cancel := s.ctx(ctx)
 	defer cancel()
-	return s.store.RemoveMember(ctx, groupID, memberType, memberID)
+	return s.store.RemoveMember(ctx, groupID, relation, memberType, memberID)
 }
 
-// GetAllMembers returns all transitive user+group members.
-func (s *Service) GetAllMembers(ctx context.Context, groupToken string, recursive bool) ([]string, error) {
+// GetAllMembers returns the user+group members holding relation ("" = member,
+// i.e. everyone in the group), transitively or direct only.
+func (s *Service) GetAllMembers(ctx context.Context, groupToken, relation string, recursive bool) ([]string, error) {
 	_, groupID, err := parseGroupToken(groupToken)
+	if err != nil {
+		return nil, err
+	}
+	relation, err = s.checkRelation(relation)
 	if err != nil {
 		return nil, err
 	}
 	ctx, cancel := s.ctx(ctx)
 	defer cancel()
 	if recursive {
-		return s.store.GetAllMembers(ctx, groupID)
+		return s.store.GetAllMembers(ctx, groupID, relation)
 	}
-	return s.store.GetDirectMembers(ctx, groupID)
+	return s.store.GetDirectMembers(ctx, groupID, relation)
 }
 
 // ── User token resolution (RoleProvider) ─────────────────────────────────────

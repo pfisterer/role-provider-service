@@ -38,6 +38,11 @@ roleProviderService:
 
   serviceTimeoutSeconds: 30
 
+  # Relations a group can carry besides "member", which is always there. A user
+  # holding one gets "group:<id>#<relation>" in addition to "group:<id>".
+  # Imports or API calls naming any other relation are refused.
+  groupRelations: []
+
 ingress:
   enabled: true
   # Empty className -> field omitted -> cluster default IngressClass (Traefik on

@@ -94,6 +94,10 @@ spec:
                   key: api-write-tokens
                   optional: true
 
+            # Relations a group can carry besides "member" (e.g. dozent,studierende).
+            - name: GROUP_RELATIONS
+              value: {{ join "," (.Values.roleProviderService.groupRelations | default list) | quote }}
+
             # ── Miscellaneous ────────────────────────────────────────────────
             - name: SERVICE_TIMEOUT_SECONDS
               value: {{ .Values.roleProviderService.serviceTimeoutSeconds | toString | quote }}

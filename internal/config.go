@@ -6,6 +6,7 @@ import (
 
 	"github.com/joho/godotenv"
 	"github.com/pfisterer/cloud-self-service-golib/envconf"
+	"github.com/pfisterer/role-provider-service/internal/common"
 )
 
 // AppConfiguration is the top-level service configuration.
@@ -41,6 +42,10 @@ type AppConfiguration struct {
 	// create/update/delete — so this ticker only guards against a missed/failed
 	// event. <= 0 disables it entirely (pure event-driven).
 	GroupCacheRefreshSeconds int `json:"group_cache_refresh_seconds"`
+	// GroupRelations lists the relations a group can carry besides "member",
+	// which is always there (e.g. "dozent,studierende"). An import or API call
+	// with any other relation is refused rather than silently dropped.
+	GroupRelations []string `json:"group_relations"`
 }
 
 // loadAppConfiguration reads config from an optional .env file and environment variables.
@@ -68,6 +73,10 @@ func loadAppConfiguration() (AppConfiguration, error) {
 		ServiceTimeoutSeconds:    envconf.Int("SERVICE_TIMEOUT_SECONDS", 30),
 		MaxResponseLimit:         envconf.Int("MAX_RESPONSE_LIMIT", 50),
 		GroupCacheRefreshSeconds: envconf.Int("GROUP_CACHE_REFRESH_SECONDS", 600),
+		GroupRelations:           envconf.StringSlice("GROUP_RELATIONS", nil),
+	}
+	if _, err := common.NewRelations(cfg.GroupRelations); err != nil {
+		return AppConfiguration{}, fmt.Errorf("GROUP_RELATIONS: %w", err)
 	}
 
 	return cfg, nil

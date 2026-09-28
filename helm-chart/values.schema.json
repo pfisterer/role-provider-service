@@ -30,6 +30,10 @@
         "replicas": { "type": "integer", "minimum": 0 },
         "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
         "serviceTimeoutSeconds": { "type": "integer", "minimum": 1 },
+        "groupRelations": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[a-z][a-z0-9_-]*$" }
+        },
         "existingSecret": { "type": "string" },
         "db": {
           "type": "object",

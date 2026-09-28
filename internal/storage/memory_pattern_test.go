@@ -13,9 +13,9 @@ func TestMemoryGetUserTokens_Pattern(t *testing.T) {
 
 	// studierende-dhbw-ma has a pattern member (all @student.dhbw-mannheim.de) and
 	// is itself nested under studierende-all, to test transitive expansion.
-	must(t, s.AddMember(ctx, "studierende-dhbw-ma", "pattern", "*@student.dhbw-mannheim.de", nil))
-	must(t, s.AddMember(ctx, "studierende-all", "group", "studierende-dhbw-ma", nil))
-	must(t, s.AddMember(ctx, "root-admin", "user", "dennis.pfisterer@dhbw.de", nil))
+	must(t, s.AddMember(ctx, "studierende-dhbw-ma", "member", "pattern", "*@student.dhbw-mannheim.de", nil))
+	must(t, s.AddMember(ctx, "studierende-all", "member", "group", "studierende-dhbw-ma", nil))
+	must(t, s.AddMember(ctx, "root-admin", "member", "user", "dennis.pfisterer@dhbw.de", nil))
 
 	// A matching student gets the pattern group + its parent group, transitively.
 	toks, err := s.GetUserTokens(ctx, "max.mustermann@student.dhbw-mannheim.de")
@@ -30,7 +30,7 @@ func TestMemoryGetUserTokens_Pattern(t *testing.T) {
 	assertNot(t, toks, "group:studierende-dhbw-ma")
 
 	// The pattern rule must not surface as a concrete member.
-	mem, err := s.GetAllMembers(ctx, "studierende-dhbw-ma")
+	mem, err := s.GetAllMembers(ctx, "studierende-dhbw-ma", "member")
 	must(t, err)
 	assertNot(t, mem, "pattern:*@student.dhbw-mannheim.de")
 }
