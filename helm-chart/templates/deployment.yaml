@@ -98,6 +98,25 @@ spec:
             - name: GROUP_RELATIONS
               value: {{ join "," (.Values.roleProviderService.groupRelations | default list) | quote }}
 
+            {{- with .Values.roleProviderService.keycloak }}
+            {{- if .realmUrl }}
+            # ── Keycloak source ──────────────────────────────────────────────
+            - name: KEYCLOAK_REALM_URL
+              value: {{ .realmUrl | quote }}
+            - name: KEYCLOAK_CLIENT_ID
+              value: {{ .clientId | quote }}
+            - name: KEYCLOAK_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: keycloak-client-secret
+            - name: KEYCLOAK_SYNC_SCHEDULE
+              value: {{ .syncSchedule | default "*/15 * * * *" | quote }}
+            - name: KEYCLOAK_MAPPING
+              value: {{ .mapping | toJson | quote }}
+            {{- end }}
+            {{- end }}
+
             # ── Miscellaneous ────────────────────────────────────────────────
             - name: SERVICE_TIMEOUT_SECONDS
               value: {{ .Values.roleProviderService.serviceTimeoutSeconds | toString | quote }}

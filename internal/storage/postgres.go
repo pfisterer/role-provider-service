@@ -53,7 +53,9 @@ type DBSyncLog struct {
 	TuplesAdded   int `gorm:"not null;default:0"`
 	TuplesRemoved int `gorm:"not null;default:0"`
 	ErrorMessage  string
-	CreatedAt     time.Time
+	// Notes, one per line; AutoMigrate adds the column with its default.
+	Notes     string `gorm:"not null;default:''"`
+	CreatedAt time.Time
 }
 
 func (DBSyncLog) TableName() string { return "sync_logs" }
@@ -161,9 +163,39 @@ func NewPostgresStore(dsn string, log *zap.SugaredLogger) (*PostgresStore, error
 	if err := db.AutoMigrate(&DBGroup{}, &DBSource{}, &DBSyncLog{}, &DBTuple{}); err != nil {
 		return nil, fmt.Errorf("failed to migrate database schema: %w", err)
 	}
+	if err := normalizeStoredIDs(db); err != nil {
+		return nil, fmt.Errorf("failed to normalize stored ids: %w", err)
+	}
 
 	log.Info("PostgreSQL storage initialized and schema migrated")
 	return &PostgresStore{db: db, log: log}, nil
+}
+
+// normalizeStoredIDs brings rows written before ids were lowercased into the one
+// spelling the service now writes and looks up (common.NormalizeID). Two
+// spellings of one row collapse into one: for a group the lowercase row wins if
+// there is one, otherwise any. A no-op once the data is clean, so it runs on
+// every start instead of being tracked as a one-off.
+func normalizeStoredIDs(db *gorm.DB) error {
+	return db.Transaction(func(tx *gorm.DB) error {
+		for _, stmt := range []string{
+			`DELETE FROM tuples a USING tuples b
+			 WHERE a.id > b.id
+			   AND lower(a.obj_id) = lower(b.obj_id) AND a.relation = b.relation
+			   AND a.subj_type = b.subj_type AND lower(a.subj_id) = lower(b.subj_id) AND a.subj_rel = b.subj_rel`,
+			`UPDATE tuples SET obj_id = lower(obj_id), subj_id = lower(subj_id)
+			 WHERE obj_id <> lower(obj_id) OR subj_id <> lower(subj_id)`,
+			`DELETE FROM groups a USING groups b
+			 WHERE a.id <> b.id AND lower(a.id) = lower(b.id) AND a.id <> lower(a.id)
+			   AND (b.id = lower(b.id) OR a.id > b.id)`,
+			`UPDATE groups SET id = lower(id) WHERE id <> lower(id)`,
+		} {
+			if err := tx.Exec(stmt).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 // ── Groups ────────────────────────────────────────────────────────────────────
@@ -563,6 +595,7 @@ func (s *PostgresStore) UpdateSyncLog(ctx context.Context, l *common.SyncLog) er
 			"tuples_added":   l.TuplesAdded,
 			"tuples_removed": l.TuplesRemoved,
 			"error_message":  l.ErrorMessage,
+			"notes":          strings.Join(l.Notes, "\n"),
 		}).Error
 }
 
@@ -585,6 +618,9 @@ func (s *PostgresStore) ListSyncLogs(ctx context.Context, sourceID uuid.UUID, li
 			TuplesAdded:   r.TuplesAdded,
 			TuplesRemoved: r.TuplesRemoved,
 			ErrorMessage:  r.ErrorMessage,
+		}
+		if r.Notes != "" {
+			out[i].Notes = strings.Split(r.Notes, "\n")
 		}
 	}
 	return out, nil

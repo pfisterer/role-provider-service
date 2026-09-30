@@ -43,6 +43,20 @@ roleProviderService:
   # Imports or API calls naming any other relation are refused.
   groupRelations: []
 
+  # Keycloak source: groups derived from the attributes Keycloak holds about
+  # every user who has signed in (e.g. the bwIDM affiliation). Empty realmUrl
+  # disables it. The service account needs realm-management/view-users only.
+  keycloak:
+    realmUrl: ""
+    clientId: ""
+    # Used only when the chart creates its own Secret; with existingSecret the
+    # key keycloak-client-secret there is read instead.
+    clientSecret: ""
+    syncSchedule: "*/15 * * * *"
+    # attribute, all_group, locations, roles, ignored_scopes, ignored_values —
+    # see the README. Every relation named under roles must be in groupRelations.
+    mapping: {}
+
 ingress:
   enabled: true
   # Empty className -> field omitted -> cluster default IngressClass (Traefik on

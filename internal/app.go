@@ -6,10 +6,12 @@ import (
 	"os"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/pfisterer/cloud-self-service-golib/logging"
 	"github.com/pfisterer/role-provider-service/internal/catalog"
 	"github.com/pfisterer/role-provider-service/internal/common"
 	"github.com/pfisterer/role-provider-service/internal/groupmgmt"
+	"github.com/pfisterer/role-provider-service/internal/keycloak"
 	"github.com/pfisterer/role-provider-service/internal/storage"
 	syncp "github.com/pfisterer/role-provider-service/internal/sync"
 	"github.com/pfisterer/role-provider-service/internal/webserver"
@@ -78,10 +80,32 @@ func RunApplication() {
 		}
 	})
 	scheduler := syncp.NewScheduler(engine, store, log)
+
+	// Keycloak source: created from the configuration, so the environment
+	// alone decides whether it exists and how often it runs.
+	var keycloakSourceID *uuid.UUID
+	if cfg.Keycloak.RealmURL != "" {
+		id, err := setupKeycloakSource(context.Background(), cfg.Keycloak, relations, store, engine, groupSvc, log)
+		if err != nil {
+			log.Fatalw("keycloak source", zap.Error(err))
+		}
+		keycloakSourceID = &id
+	}
+
 	if err := scheduler.Start(context.Background()); err != nil {
 		log.Warnw("failed to start sync scheduler", zap.Error(err))
 	}
 	defer scheduler.Stop()
+
+	// The first read right away rather than at the next scheduled minute — in
+	// the background, because Keycloak being slow must not delay the start.
+	if keycloakSourceID != nil {
+		go func() {
+			if err := engine.RunSync(context.Background(), *keycloakSourceID, nil); err != nil {
+				log.Errorw("initial keycloak sync failed", zap.Error(err))
+			}
+		}()
+	}
 
 	// HTTP router.
 	router := webserver.SetupRouter(webserver.SetupConfig{
@@ -101,4 +125,50 @@ func RunApplication() {
 	if err := router.Run(cfg.GinBindString); err != nil {
 		log.Fatalw("server stopped", zap.Error(err))
 	}
+}
+
+// setupKeycloakSource connects to Keycloak, checks the mapping against the
+// configured relations, and makes sure the one keycloak source exists with the
+// configured schedule. Returns its id.
+func setupKeycloakSource(ctx context.Context, cfg KeycloakConfig, relations common.Relations, store storage.Store,
+	engine *syncp.Engine, groupSvc *groupmgmt.Service, log *zap.SugaredLogger) (uuid.UUID, error) {
+	client, err := keycloak.NewClient(cfg.RealmURL, cfg.ClientID, cfg.ClientSecret)
+	if err != nil {
+		return uuid.Nil, err
+	}
+	mapping, err := keycloak.ParseMapping(cfg.Mapping, relations)
+	if err != nil {
+		return uuid.Nil, err
+	}
+
+	sources, err := store.ListSources(ctx)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("list sources: %w", err)
+	}
+	var src *common.Source
+	for i := range sources {
+		if sources[i].Type == common.SourceTypeKeycloak {
+			src = &sources[i]
+			break
+		}
+	}
+	if src == nil {
+		src = &common.Source{ID: uuid.New(), Name: "keycloak", Type: common.SourceTypeKeycloak, Schedule: cfg.SyncSchedule}
+		if err := store.CreateSource(ctx, src); err != nil {
+			return uuid.Nil, fmt.Errorf("create keycloak source: %w", err)
+		}
+		log.Infow("created keycloak source", "source_id", src.ID, "schedule", cfg.SyncSchedule)
+	} else if src.Schedule != cfg.SyncSchedule {
+		if err := store.UpdateSource(ctx, src.ID, src.Name, cfg.SyncSchedule, "", "", ""); err != nil {
+			return uuid.Nil, fmt.Errorf("update keycloak source schedule: %w", err)
+		}
+	}
+
+	kc := keycloak.NewSource(client, mapping, store, log)
+	kc.SetSourceID(src.ID)
+	engine.SetKeycloak(kc.Fetch)
+	groupSvc.SetUserLookup(kc.EnsureUser)
+	log.Infow("keycloak source configured", "source_id", src.ID, "realm", cfg.RealmURL,
+		"locations", len(mapping.Locations), "roles", len(mapping.Roles))
+	return src.ID, nil
 }

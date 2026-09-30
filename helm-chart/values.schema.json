@@ -3,7 +3,10 @@
   "title": "role-provider-service values",
   "type": "object",
   "additionalProperties": false,
-  "required": ["roleProviderService", "ingress"],
+  "required": [
+    "roleProviderService",
+    "ingress"
+  ],
   "properties": {
     "global": {
       "type": "object",
@@ -13,7 +16,9 @@
       "type": "boolean",
       "description": "Dependency condition of the cloud-self-service umbrella chart, which passes it down into this namespace — so it has to be allowed here for the same reason global does. A standalone install ignores it."
     },
-    "nameOverride": { "type": "string" },
+    "nameOverride": {
+      "type": "string"
+    },
     "fullnameOverride": {
       "type": "string",
       "description": "Pins the resource base name. The umbrella chart sets this so adopting these releases does not rename every object."
@@ -21,40 +26,131 @@
     "roleProviderService": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["image", "version", "hostname", "replicas", "port", "db", "api"],
+      "required": [
+        "image",
+        "version",
+        "hostname",
+        "replicas",
+        "port",
+        "db",
+        "api"
+      ],
       "properties": {
-        "image": { "type": "string", "minLength": 1 },
-        "imagePullPolicy": { "type": "string", "enum": ["Always", "IfNotPresent", "Never"] },
-        "version": { "type": "string", "description": "Image tag. Empty falls back to the chart appVersion, which is how a pinned chart version pins the image." },
-        "hostname": { "type": "string", "minLength": 1 },
-        "replicas": { "type": "integer", "minimum": 0 },
-        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
-        "serviceTimeoutSeconds": { "type": "integer", "minimum": 1 },
+        "image": {
+          "type": "string",
+          "minLength": 1
+        },
+        "imagePullPolicy": {
+          "type": "string",
+          "enum": [
+            "Always",
+            "IfNotPresent",
+            "Never"
+          ]
+        },
+        "version": {
+          "type": "string",
+          "description": "Image tag. Empty falls back to the chart appVersion, which is how a pinned chart version pins the image."
+        },
+        "hostname": {
+          "type": "string",
+          "minLength": 1
+        },
+        "replicas": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "serviceTimeoutSeconds": {
+          "type": "integer",
+          "minimum": 1
+        },
         "groupRelations": {
           "type": "array",
-          "items": { "type": "string", "pattern": "^[a-z][a-z0-9_-]*$" }
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_-]*$"
+          }
         },
-        "existingSecret": { "type": "string" },
+        "existingSecret": {
+          "type": "string"
+        },
         "db": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["connectionString"],
+          "required": [
+            "connectionString"
+          ],
           "properties": {
-            "type": { "type": "string", "enum": ["memory", "postgres"] },
-            "connectionString": { "type": "string", "minLength": 1 }
+            "type": {
+              "type": "string",
+              "enum": [
+                "memory",
+                "postgres"
+              ]
+            },
+            "connectionString": {
+              "type": "string",
+              "minLength": 1
+            }
           }
         },
         "api": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["tokens"],
+          "required": [
+            "tokens"
+          ],
           "properties": {
-            "mode": { "type": "string", "enum": ["production", "development"] },
-            "tokens": { "type": "string", "minLength": 1 },
-            "writeTokens": { "type": "string" },
+            "mode": {
+              "type": "string",
+              "enum": [
+                "production",
+                "development"
+              ]
+            },
+            "tokens": {
+              "type": "string",
+              "minLength": 1
+            },
+            "writeTokens": {
+              "type": "string"
+            },
             "corsAllowedOrigins": {
               "type": "array",
-              "items": { "type": "string", "pattern": "^https?://[^/]+$" }
+              "items": {
+                "type": "string",
+                "pattern": "^https?://[^/]+$"
+              }
+            }
+          }
+        },
+        "keycloak": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Keycloak source: groups derived from user attributes. Empty realmUrl disables it. The client secret is the key keycloak-client-secret in the chart's Secret (or existingSecret).",
+          "properties": {
+            "realmUrl": {
+              "type": "string",
+              "pattern": "^$|^https?://.+/realms/[^/]+$"
+            },
+            "clientId": {
+              "type": "string"
+            },
+            "clientSecret": {
+              "type": "string",
+              "description": "Only used when the chart creates its own Secret."
+            },
+            "syncSchedule": {
+              "type": "string"
+            },
+            "mapping": {
+              "type": "object",
+              "description": "The attribute-to-group rules (see the role-provider README), passed on as JSON."
             }
           }
         }
@@ -63,13 +159,21 @@
     "ingress": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["enabled"],
+      "required": [
+        "enabled"
+      ],
       "properties": {
-        "enabled": { "type": "boolean" },
-        "className": { "type": "string" },
+        "enabled": {
+          "type": "boolean"
+        },
+        "className": {
+          "type": "string"
+        },
         "annotations": {
           "type": "object",
-          "additionalProperties": { "type": "string" }
+          "additionalProperties": {
+            "type": "string"
+          }
         }
       }
     }

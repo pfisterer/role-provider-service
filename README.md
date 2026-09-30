@@ -41,6 +41,8 @@ A **Zanzibar-style tuple store** with a small HTTP API:
   "who should manage this?" without exposing the whole directory.
 - **User search** by email address only (case-insensitive substring). The store holds no names, so nobody can be looked up by name, and people who are members only through a pattern have no row and are not found.
 - **Sync sources** import groups and memberships from **CSV** or **LDIF** files — uploaded through the API, or read from a `file_path` on demand or on a cron `schedule` — and keep a per-source log with the last status. A sync replaces every membership that source owns, so a source is always exactly its latest file.
+- **A Keycloak source** derives groups from the attributes the identity provider holds about everyone who has signed in, e.g. the bwIDM affiliation — nothing to import by hand (see below).
+- **One spelling for every id.** Addresses, group ids and patterns are stored and looked up in lowercase, so `A.B@x` and `a.b@x` are one person; rows written before that are rewritten at startup.
 
 Group search is answered from an in-memory snapshot of the group catalog, reloaded on startup, after every sync and after every group edit, with `GROUP_CACHE_REFRESH_SECONDS` only as a backstop — so a type-ahead never costs a database round-trip. Token resolution queries the store directly (a recursive query on Postgres), so a membership change counts on the next request.
 
@@ -58,6 +60,25 @@ wwi23seb,group:wwi23seb-kurs,,studierende
 ```
 
 An **LDIF** source reads entries whose `objectClass` is `groupOfNames`, `groupOfUniqueNames`, `posixGroup` or `group`. The group name is the first `cn` of the entry's DN, its `description` attribute becomes the group description, and each `member`/`uniqueMember` DN is turned into an address by the source's `dn_email_regexp` (required, first capture group, e.g. `mail=([^,]+)`). DNs the expression does not match are skipped. An optional `group_relation_regexp` turns LDAP groups into relations of another group: it is matched against the CN, and its named captures `group` and `relation` give the target — `^(?P<group>.+)-(?P<relation>dozent)$` makes `cn=wwi23seb-dozent` the `dozent` relation of `wwi23seb`. A CN it does not match stays a plain group, and a relation group's description is not applied to the target group.
+
+### Keycloak
+
+With `KEYCLOAK_REALM_URL` set, the service keeps one source of type `keycloak`, created at startup and read on `KEYCLOAK_SYNC_SCHEDULE` and once right after the start. It reads every enabled user through the admin API with a service account that needs `realm-management/view-users` and nothing else, and turns the values of one attribute, each of the form `<value>@<scope>`, into memberships by the rules in `KEYCLOAK_MAPPING`:
+
+```json
+{
+  "attribute": "edu_person_affiliation",
+  "all_group": {"group": "dhbw", "description": "All locations"},
+  "locations": {"dhbw-mannheim.de": {"group": "standort-ma", "description": "DHBW Mannheim"}},
+  "roles": {"student": "studierende", "staff": "beschaeftigte", "employee": "beschaeftigte", "faculty": "lehrende"},
+  "ignored_scopes": ["kit.edu"],
+  "ignored_values": ["member", "affiliate"]
+}
+```
+
+The scope picks the location's group, the value the relation held there; a user with a known scope but no mapped value is a plain member. `all_group` receives the same relations across all locations. The two tables are independent, so a combination nobody had yet needs no entry. Nothing is guessed: a scope no location names and a value neither mapped nor ignored grant nothing beyond the location, and are listed with their counts in the run's `notes` in the sync log. Every relation under `roles` must be in `GROUP_RELATIONS`, or the service refuses to start.
+
+Keycloak creates a user at their first sign-in, and that sign-in asks for their tokens. So a token request for an address the last run did not know reads that one user (at most once per ten minutes per address, with a three-second timeout) and adds their memberships under the Keycloak source, which the next run then owns.
 
 ## API
 
@@ -98,6 +119,10 @@ With `DB_TYPE=memory` and `DB_ADD_MOCK_DATA=true` the service starts with a smal
 | `DB_ADD_MOCK_DATA` | `false` | Seed example groups and identities |
 | `GROUP_CACHE_REFRESH_SECONDS` | `600` | Backstop interval for reloading the group search snapshot; `<= 0` disables it |
 | `GROUP_RELATIONS` | *(empty)* | Relations a group can carry besides `member`, comma-separated (e.g. `dozent,studierende`); names are lowercase letters, digits, `-`, `_`. `GET /v1/relations` lists them |
+| `KEYCLOAK_REALM_URL` | *(empty)* | Realm issuer URL (`https://…/realms/<name>`); empty disables the Keycloak source |
+| `KEYCLOAK_CLIENT_ID` / `KEYCLOAK_CLIENT_SECRET` | — | Service account with `realm-management/view-users` |
+| `KEYCLOAK_MAPPING` | — | JSON rules turning attribute values into groups (see Import formats) |
+| `KEYCLOAK_SYNC_SCHEDULE` | `*/15 * * * *` | Cron schedule of the full read |
 | `MAX_RESPONSE_LIMIT` | `50` | Cap on results per group or user search |
 | `SERVICE_TIMEOUT_SECONDS` | `30` | Per-request timeout |
 

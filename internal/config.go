@@ -46,6 +46,23 @@ type AppConfiguration struct {
 	// which is always there (e.g. "dozent,studierende"). An import or API call
 	// with any other relation is refused rather than silently dropped.
 	GroupRelations []string `json:"group_relations"`
+	// Keycloak configures the Keycloak source; an empty RealmURL disables it.
+	Keycloak KeycloakConfig `json:"keycloak"`
+}
+
+// KeycloakConfig is the connection to Keycloak and the rules that turn user
+// attributes into groups (see internal/keycloak).
+type KeycloakConfig struct {
+	// RealmURL is the realm's issuer URL, e.g. https://sso.example/realms/main.
+	RealmURL string `json:"realm_url"`
+	ClientID string `json:"client_id"`
+	// ClientSecret is the service account's secret; it needs
+	// realm-management/view-users and nothing else.
+	ClientSecret string `json:"-"`
+	// Mapping is the JSON of keycloak.Mapping.
+	Mapping string `json:"mapping"`
+	// SyncSchedule is the cron schedule of the full read.
+	SyncSchedule string `json:"sync_schedule"`
 }
 
 // loadAppConfiguration reads config from an optional .env file and environment variables.
@@ -74,6 +91,13 @@ func loadAppConfiguration() (AppConfiguration, error) {
 		MaxResponseLimit:         envconf.Int("MAX_RESPONSE_LIMIT", 50),
 		GroupCacheRefreshSeconds: envconf.Int("GROUP_CACHE_REFRESH_SECONDS", 600),
 		GroupRelations:           envconf.StringSlice("GROUP_RELATIONS", nil),
+		Keycloak: KeycloakConfig{
+			RealmURL:     envconf.String("KEYCLOAK_REALM_URL", ""),
+			ClientID:     envconf.String("KEYCLOAK_CLIENT_ID", ""),
+			ClientSecret: envconf.String("KEYCLOAK_CLIENT_SECRET", ""),
+			Mapping:      envconf.String("KEYCLOAK_MAPPING", ""),
+			SyncSchedule: envconf.String("KEYCLOAK_SYNC_SCHEDULE", "*/15 * * * *"),
+		},
 	}
 	if _, err := common.NewRelations(cfg.GroupRelations); err != nil {
 		return AppConfiguration{}, fmt.Errorf("GROUP_RELATIONS: %w", err)

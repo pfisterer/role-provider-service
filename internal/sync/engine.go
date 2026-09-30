@@ -22,6 +22,17 @@ type Engine struct {
 	// afterSync, if set, is called after a successful sync (e.g. to refresh the
 	// group search cache so imported groups are searchable immediately).
 	afterSync func(context.Context)
+	// keycloak, if set, reads the Keycloak source; nil means none is configured.
+	keycloak KeycloakFetcher
+}
+
+// KeycloakFetcher reads the Keycloak source: tuples, group descriptions and
+// notes on attribute values it could not place.
+type KeycloakFetcher func(ctx context.Context) ([]common.TuplePair, map[string]string, []string, error)
+
+// SetKeycloak registers the reader for sources of type keycloak.
+func (e *Engine) SetKeycloak(fn KeycloakFetcher) {
+	e.keycloak = fn
 }
 
 func NewEngine(store storage.Store, relations common.Relations, log *zap.SugaredLogger) *Engine {
@@ -50,8 +61,16 @@ func (e *Engine) RunSync(ctx context.Context, sourceID uuid.UUID, content []byte
 		e.log.Warnw("failed to create sync log", "source_id", sourceID, zap.Error(err))
 	}
 
-	tuples, descriptions, parseErr := e.parseTuples(src, content)
+	var tuples []common.TuplePair
+	var descriptions map[string]string
+	var parseErr error
+	if src.Type == common.SourceTypeKeycloak {
+		tuples, descriptions, logEntry.Notes, parseErr = e.fetchKeycloak(ctx, content)
+	} else {
+		tuples, descriptions, parseErr = e.parseTuples(src, content)
+	}
 	if parseErr == nil {
+		tuples, descriptions = normalizeIDs(tuples, descriptions)
 		parseErr = e.checkRelations(tuples)
 	}
 	if parseErr != nil {
@@ -103,6 +122,18 @@ func (e *Engine) checkRelations(tuples []common.TuplePair) error {
 	return nil
 }
 
+// fetchKeycloak reads the Keycloak source. It has no file: an upload to it is
+// refused rather than ignored, so nobody believes they replaced its data.
+func (e *Engine) fetchKeycloak(ctx context.Context, content []byte) ([]common.TuplePair, map[string]string, []string, error) {
+	if content != nil {
+		return nil, nil, nil, fmt.Errorf("a keycloak source reads Keycloak and takes no upload")
+	}
+	if e.keycloak == nil {
+		return nil, nil, nil, fmt.Errorf("no keycloak connection is configured")
+	}
+	return e.keycloak(ctx)
+}
+
 // parseTuples reads the data (from content bytes or file path) and parses it
 // into tuples plus the group descriptions carried by the source.
 func (e *Engine) parseTuples(src *common.Source, content []byte) ([]common.TuplePair, map[string]string, error) {
@@ -131,4 +162,19 @@ func (e *Engine) parseTuples(src *common.Source, content []byte) ([]common.Tuple
 	default:
 		return nil, nil, fmt.Errorf("unsupported source type %q", src.Type)
 	}
+}
+
+// normalizeIDs puts every group and member id into the one spelling the store
+// keeps (common.NormalizeID). A file may spell a group or an address with
+// capitals; after this, two spellings are one row.
+func normalizeIDs(tuples []common.TuplePair, descriptions map[string]string) ([]common.TuplePair, map[string]string) {
+	for i := range tuples {
+		tuples[i].GroupID = common.NormalizeID(tuples[i].GroupID)
+		tuples[i].MemberID = common.NormalizeID(tuples[i].MemberID)
+	}
+	normalized := make(map[string]string, len(descriptions))
+	for id, desc := range descriptions {
+		normalized[common.NormalizeID(id)] = desc
+	}
+	return tuples, normalized
 }

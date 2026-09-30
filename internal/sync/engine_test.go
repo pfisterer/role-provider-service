@@ -2,6 +2,7 @@ package sync
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 
@@ -48,5 +49,70 @@ func TestEngine_RefusesUnknownRelation(t *testing.T) {
 	toks, _ := store.GetUserTokens(ctx, "anna@example")
 	if len(toks) != 3 {
 		t.Errorf("tokens = %v", toks)
+	}
+}
+
+// A file may spell a group or an address with capitals; the identity provider may
+// spell it differently at login. Both are the same person, so an import stores
+// the address in one spelling and a lookup in any spelling finds it.
+func TestEngine_StoresEmailsLowercase(t *testing.T) {
+	ctx := context.Background()
+	store := storage.NewMemoryStore(zap.NewNop().Sugar())
+	relations, err := common.NewRelations(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := NewEngine(store, relations, zap.NewNop().Sugar())
+	src := &common.Source{ID: uuid.New(), Name: "kurse", Type: common.SourceTypeCSV}
+	if err := store.CreateSource(ctx, src); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := engine.RunSync(ctx, src.ID, []byte("group,member\nWWI23seb, Anna.Berg@Example.org\n")); err != nil {
+		t.Fatal(err)
+	}
+	toks, _ := store.GetUserTokens(ctx, "anna.berg@example.org")
+	if !slices.Contains(toks, "group:wwi23seb") {
+		t.Errorf("tokens = %v", toks)
+	}
+}
+
+// The Keycloak source runs through the same engine as a file import: its
+// tuples replace the previous run's, and what it could not place is kept in
+// the sync log. An upload to it is refused.
+func TestEngine_KeycloakSource(t *testing.T) {
+	ctx := context.Background()
+	store := storage.NewMemoryStore(zap.NewNop().Sugar())
+	relations, err := common.NewRelations([]string{"studierende"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := NewEngine(store, relations, zap.NewNop().Sugar())
+	src := &common.Source{ID: uuid.New(), Name: "keycloak", Type: common.SourceTypeKeycloak}
+	if err := store.CreateSource(ctx, src); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := engine.RunSync(ctx, src.ID, nil); err == nil {
+		t.Fatal("a keycloak source without a connection must fail, not import nothing")
+	}
+
+	engine.SetKeycloak(func(context.Context) ([]common.TuplePair, map[string]string, []string, error) {
+		return []common.TuplePair{{GroupID: "Standort-MA", Relation: "studierende", MemberType: "user", MemberID: "A@x"}},
+			map[string]string{"standort-ma": "DHBW Mannheim"}, []string{`unknown scope "y": 1 user(s)`}, nil
+	})
+	if err := engine.RunSync(ctx, src.ID, []byte("group,member\n")); err == nil {
+		t.Fatal("an upload to a keycloak source must be refused")
+	}
+	if err := engine.RunSync(ctx, src.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	toks, _ := store.GetUserTokens(ctx, "a@x")
+	if !slices.Contains(toks, "group:standort-ma#studierende") {
+		t.Errorf("tokens = %v", toks)
+	}
+	logs, _ := store.ListSyncLogs(ctx, src.ID, 1)
+	if len(logs) != 1 || len(logs[0].Notes) != 1 {
+		t.Errorf("sync log = %+v", logs)
 	}
 }

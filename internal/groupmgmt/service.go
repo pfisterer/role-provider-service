@@ -34,6 +34,8 @@ type Service struct {
 	relations common.Relations
 	timeout   time.Duration
 	log       *zap.SugaredLogger
+	// userLookup, if set, runs before a user's tokens are resolved.
+	userLookup func(ctx context.Context, email string)
 }
 
 func NewService(store storage.Store, cache *catalog.GroupCache, relations common.Relations, timeout time.Duration, log *zap.SugaredLogger) *Service {
@@ -75,7 +77,7 @@ func (s *Service) CreateGroup(ctx context.Context, id, displayName, description 
 		return nil, fmt.Errorf("group id must not be empty")
 	}
 	// Strip prefix if caller accidentally sent "group:foo".
-	id = strings.TrimPrefix(id, common.GroupPrefix)
+	id = common.NormalizeID(strings.TrimPrefix(id, common.GroupPrefix))
 
 	ctx, cancel := s.ctx(ctx)
 	defer cancel()
@@ -234,10 +236,21 @@ func (s *Service) GetAllMembers(ctx context.Context, groupToken, relation string
 
 // ── User token resolution (RoleProvider) ─────────────────────────────────────
 
+// SetUserLookup registers a function run before a user's tokens are resolved,
+// which may add memberships for someone no source knew yet (the Keycloak
+// source, at a person's first sign-in).
+func (s *Service) SetUserLookup(fn func(ctx context.Context, email string)) {
+	s.userLookup = fn
+}
+
 // GetUserTokens returns all tokens (user: + group:) for a given email.
 func (s *Service) GetUserTokens(ctx context.Context, email string) ([]string, error) {
+	email = common.NormalizeID(email)
 	if email == "" {
 		return nil, fmt.Errorf("email must not be empty")
+	}
+	if s.userLookup != nil {
+		s.userLookup(ctx, email)
 	}
 	ctx, cancel := s.ctx(ctx)
 	defer cancel()
@@ -249,11 +262,11 @@ func (s *Service) GetUserTokens(ctx context.Context, email string) ([]string, er
 func parseGroupToken(token string) (prefix, id string, err error) {
 	token = strings.TrimSpace(token)
 	if strings.HasPrefix(token, common.GroupPrefix) {
-		return common.GroupPrefix, strings.TrimPrefix(token, common.GroupPrefix), nil
+		return common.GroupPrefix, common.NormalizeID(strings.TrimPrefix(token, common.GroupPrefix)), nil
 	}
 	// Accept bare ID without prefix for URL path params.
 	if token != "" && !strings.Contains(token, ":") {
-		return common.GroupPrefix, token, nil
+		return common.GroupPrefix, common.NormalizeID(token), nil
 	}
 	return "", "", fmt.Errorf("%w: got '%s'", ErrInvalidToken, token)
 }
@@ -264,7 +277,7 @@ func parseMemberToken(token string) (typ, id string, err error) {
 	if t == "" {
 		return "", "", fmt.Errorf("%w: got '%s'", ErrInvalidToken, token)
 	}
-	return t, i, nil
+	return t, common.NormalizeID(i), nil
 }
 
 func ifEmpty(s, fallback string) string {

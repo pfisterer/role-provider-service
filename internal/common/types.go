@@ -24,6 +24,10 @@ const (
 
 	SourceTypeCSV  = "csv"
 	SourceTypeLDIF = "ldif"
+	// SourceTypeKeycloak derives groups from the users' attributes in
+	// Keycloak. There is at most one such source; it is created from the
+	// configuration at startup, not through the API.
+	SourceTypeKeycloak = "keycloak"
 
 	SyncStatusOK      = "ok"
 	SyncStatusError   = "error"
@@ -70,6 +74,10 @@ type SyncLog struct {
 	TuplesAdded   int        `json:"tuples_added"`
 	TuplesRemoved int        `json:"tuples_removed"`
 	ErrorMessage  string     `json:"error_message,omitempty"`
+	// Notes are what a successful run could not place — for the Keycloak
+	// source, attribute values no rule maps. Not errors: the run imported
+	// everything it understood.
+	Notes []string `json:"notes,omitempty"`
 }
 
 // TuplePair is a single group→member relationship used by the sync engine.
@@ -78,6 +86,16 @@ type TuplePair struct {
 	Relation   string // "member" or one of the configured relations; "" means "member"
 	MemberType string // "user" or "group"
 	MemberID   string // email or group name, no prefix
+}
+
+// NormalizeID is the one spelling of an id stored and looked up here — an
+// email address, a group id, a pattern. Lowercase, because none of them may
+// tell two things apart by case: mail systems compare addresses
+// case-insensitively and identity providers release them in whatever case the
+// directory holds, and a group "Leiter-ZWR" next to "leiter-zwr" is a typo that
+// grants nothing, not a second group.
+func NormalizeID(id string) string {
+	return strings.ToLower(strings.TrimSpace(id))
 }
 
 // ParseToken splits a token like "group:foo" or "user:bar" into (type, id).
