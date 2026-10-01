@@ -160,6 +160,18 @@ func (m Mapping) Derive(email string, values []string, unmapped Unmapped) []comm
 		}
 	}
 
+	// Counted per person, not per value: one person often carries several
+	// values with the same unknown scope ("employee@x", "member@x").
+	unknownScopes, unknownValues := map[string]bool{}, map[string]bool{}
+	defer func() {
+		for k := range unknownScopes {
+			unmapped.Scopes[k]++
+		}
+		for k := range unknownValues {
+			unmapped.Values[k]++
+		}
+	}()
+
 	for _, raw := range values {
 		value, scope, ok := strings.Cut(common.NormalizeID(raw), "@")
 		if !ok || scope == "" {
@@ -168,13 +180,13 @@ func (m Mapping) Derive(email string, values []string, unmapped Unmapped) []comm
 		loc, known := m.Locations[scope]
 		if !known {
 			if !slices.Contains(m.IgnoredScopes, scope) {
-				unmapped.Scopes[scope]++
+				unknownScopes[scope] = true
 			}
 			continue
 		}
 		role, mapped := m.Roles[value]
 		if !mapped && !slices.Contains(m.IgnoredValues, value) {
-			unmapped.Values[value+"@"+scope]++
+			unknownValues[value+"@"+scope] = true
 		}
 		join(loc.Group, role)
 		if m.AllGroup != nil {

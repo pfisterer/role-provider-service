@@ -115,7 +115,8 @@ func TestDeriveReportsWhatItCannotPlace(t *testing.T) {
 	if want := []string{"group:dhbw", "group:standort-ma"}; !slices.Equal(got, want) {
 		t.Errorf("got %v, want %v", got, want)
 	}
-	m.Derive("b@x", []string{"student@mosbach.dhbw.de"}, unmapped)
+	// Two values with the same unknown scope are still one person.
+	m.Derive("b@x", []string{"student@mosbach.dhbw.de", "member@mosbach.dhbw.de"}, unmapped)
 	notes := unmapped.Notes()
 	want := []string{`unknown scope "mosbach.dhbw.de": 2 user(s)`, `unmapped value "alum@dhbw-mannheim.de": 1 user(s)`}
 	if !slices.Equal(notes, want) {
