@@ -41,8 +41,11 @@ type Group struct {
 	DisplayName string     `json:"display_name"`
 	Description string     `json:"description"`
 	SourceID    *uuid.UUID `json:"source_id,omitempty"`
-	CreatedAt   time.Time  `json:"created_at"`
-	UpdatedAt   time.Time  `json:"updated_at"`
+	// Relations are the relations someone actually holds in this group
+	// (besides member) — what a search can offer as "group:<id>#<relation>".
+	Relations []string  `json:"relations,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // Source represents a sync source (CSV or LDIF file).

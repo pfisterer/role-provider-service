@@ -21,6 +21,10 @@ var ErrNotFound = errors.New("not found")
 // ErrAlreadyExists is returned when a resource already exists.
 var ErrAlreadyExists = errors.New("already exists")
 
+// ErrOwnedBySource marks a change through the API to a group a sync source
+// maintains.
+var ErrOwnedBySource = errors.New("owned by a sync source")
+
 // ErrInvalidToken is returned when a token string has an invalid format.
 var ErrInvalidToken = fmt.Errorf("invalid token: must start with '%s' or '%s'", common.GroupPrefix, common.UserPrefix)
 
@@ -184,14 +188,20 @@ func (s *Service) AddMember(ctx context.Context, groupToken, relation, memberTok
 		return err
 	}
 
-	// Ensure the group exists.
+	// Ensure the group exists, and that no source owns it: a source's groups
+	// are exactly its latest data, and a member added here would either be
+	// swept away by its next run or outlive it unnoticed.
 	ctx, cancel := s.ctx(ctx)
 	defer cancel()
-	if _, err := s.store.GetGroup(ctx, groupID); err != nil {
+	g, err := s.store.GetGroup(ctx, groupID)
+	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return fmt.Errorf("%w: group '%s'", ErrNotFound, groupToken)
 		}
 		return err
+	}
+	if g.SourceID != nil {
+		return fmt.Errorf("%w: group '%s' is maintained by a sync source; change it there", ErrOwnedBySource, groupToken)
 	}
 	return s.store.AddMember(ctx, groupID, relation, memberType, memberID, nil)
 }
@@ -212,6 +222,9 @@ func (s *Service) RemoveMember(ctx context.Context, groupToken, relation, member
 	}
 	ctx, cancel := s.ctx(ctx)
 	defer cancel()
+	if g, err := s.store.GetGroup(ctx, groupID); err == nil && g.SourceID != nil {
+		return fmt.Errorf("%w: group '%s' is maintained by a sync source; change it there", ErrOwnedBySource, groupToken)
+	}
 	return s.store.RemoveMember(ctx, groupID, relation, memberType, memberID)
 }
 

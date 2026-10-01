@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -46,6 +47,41 @@ func NewMemoryStore(log *zap.SugaredLogger) *MemoryStore {
 }
 
 // ── Groups ────────────────────────────────────────────────────────────────────
+
+func (s *MemoryStore) GroupRelations(_ context.Context) (map[string][]string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	seen := map[string]map[string]bool{}
+	for _, t := range s.tuples {
+		if t.relation == common.RelationMember {
+			continue
+		}
+		if seen[t.objID] == nil {
+			seen[t.objID] = map[string]bool{}
+		}
+		seen[t.objID][t.relation] = true
+	}
+	out := map[string][]string{}
+	for id, rels := range seen {
+		for r := range rels {
+			out[id] = append(out[id], r)
+		}
+		slices.Sort(out[id])
+	}
+	return out, nil
+}
+
+func (s *MemoryStore) GroupOwners(_ context.Context, ids []string) (map[string]*uuid.UUID, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := map[string]*uuid.UUID{}
+	for _, id := range ids {
+		if g, ok := s.groups[id]; ok {
+			out[id] = g.SourceID
+		}
+	}
+	return out, nil
+}
 
 func (s *MemoryStore) CreateGroup(_ context.Context, g *common.Group) error {
 	s.mu.Lock()

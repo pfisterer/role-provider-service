@@ -44,6 +44,10 @@ A **Zanzibar-style tuple store** with a small HTTP API:
 - **A Keycloak source** derives groups from the attributes the identity provider holds about everyone who has signed in, e.g. the bwIDM affiliation — nothing to import by hand (see below).
 - **One spelling for every id.** Addresses, group ids and patterns are stored and looked up in lowercase, so `A.B@x` and `a.b@x` are one person; rows written before that are rewritten at startup.
 
+**Group search** reads the query the way search boxes usually do: words are alternatives (`mannheim karlsruhe`), a quoted phrase is required (`"fak technik"`), `UND`, `AND`, `&` or a leading `+` make terms required (`mannheim UND studierende`), and `*` is a wildcard matched against a whole field or word (`stud*`, `*-ma`). Terms compare case-insensitively with umlauts spelled out, so `beschäftigte` finds `beschaeftigte`, and a `group:` prefix is ignored. Besides the groups themselves, every relation someone holds in a group is offered as an entry of its own (`group:standort-ma#beschaeftigte`, described as the group plus `· Rolle: beschaeftigte`), with the relation's name as a search term. An exact ID comes first, then entries matching more terms.
+
+**A group belongs to one writer**: the source that created it, or the API. A sync that would write members into a group owned by another source fails, naming the owner, and the API refuses to change members of a group a source maintains. Two sources filling the same name would silently merge two meanings; the remedy is a prefix of the source's own (the Keycloak groups are `standort-*`), and combining sources on purpose works by referring to the other source's group as a member.
+
 Group search is answered from an in-memory snapshot of the group catalog, reloaded on startup, after every sync and after every group edit, with `GROUP_CACHE_REFRESH_SECONDS` only as a backstop — so a type-ahead never costs a database round-trip. Token resolution queries the store directly (a recursive query on Postgres), so a membership change counts on the next request.
 
 ## Import formats

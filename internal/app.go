@@ -57,7 +57,18 @@ func RunApplication() {
 	groupCache := catalog.New(func(ctx context.Context) ([]common.Group, error) {
 		ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 		defer cancel()
-		return store.ListGroups(ctx, "", nil, 0)
+		groups, err := store.ListGroups(ctx, "", nil, 0)
+		if err != nil {
+			return nil, err
+		}
+		relations, err := store.GroupRelations(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for i := range groups {
+			groups[i].Relations = relations[groups[i].ID]
+		}
+		return groups, nil
 	}, log)
 	if err := groupCache.Refresh(context.Background()); err != nil {
 		log.Warnw("initial group cache load failed", zap.Error(err))
@@ -162,6 +173,12 @@ func setupKeycloakSource(ctx context.Context, cfg KeycloakConfig, relations comm
 		if err := store.UpdateSource(ctx, src.ID, src.Name, cfg.SyncSchedule, "", "", ""); err != nil {
 			return uuid.Nil, fmt.Errorf("update keycloak source schedule: %w", err)
 		}
+	}
+
+	// The groups this source will fill must not belong to anyone else; caught
+	// here, a collision stops the deployment instead of every sync.
+	if err := syncp.CheckOwnership(ctx, store, src.ID, mapping.Groups()); err != nil {
+		return uuid.Nil, err
 	}
 
 	kc := keycloak.NewSource(client, mapping, store, log)

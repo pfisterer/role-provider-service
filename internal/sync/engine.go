@@ -73,6 +73,9 @@ func (e *Engine) RunSync(ctx context.Context, sourceID uuid.UUID, content []byte
 		tuples, descriptions = normalizeIDs(tuples, descriptions)
 		parseErr = e.checkRelations(tuples)
 	}
+	if parseErr == nil {
+		parseErr = CheckOwnership(ctx, e.store, src.ID, groupIDs(tuples))
+	}
 	if parseErr != nil {
 		now := time.Now()
 		logEntry.FinishedAt = &now
@@ -118,6 +121,48 @@ func (e *Engine) checkRelations(tuples []common.TuplePair) error {
 			return fmt.Errorf("group %q: %w", tuples[i].GroupID, err)
 		}
 		tuples[i].Relation = rel
+	}
+	return nil
+}
+
+// groupIDs returns the distinct groups the tuples write members into.
+func groupIDs(tuples []common.TuplePair) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, t := range tuples {
+		if !seen[t.GroupID] {
+			seen[t.GroupID] = true
+			out = append(out, t.GroupID)
+		}
+	}
+	return out
+}
+
+// CheckOwnership refuses a source writing members into a group that belongs to
+// someone else — another source, or the API. A group belongs to exactly one
+// writer: two sources filling the same name silently merge two meanings (the
+// CSV's staff tree "dhbw-ma" would have gained every student), and when one of
+// them drops a member the other still lists, the member vanishes anyway.
+// Referring to another source's group as a member is always allowed; that is
+// how two sources are combined on purpose.
+func CheckOwnership(ctx context.Context, store storage.Store, sourceID uuid.UUID, groups []string) error {
+	owners, err := store.GroupOwners(ctx, groups)
+	if err != nil {
+		return fmt.Errorf("check group ownership: %w", err)
+	}
+	for _, id := range groups {
+		owner, exists := owners[id]
+		if !exists || (owner != nil && *owner == sourceID) {
+			continue
+		}
+		who := "the API"
+		if owner != nil {
+			who = "source " + owner.String()
+			if src, err := store.GetSource(ctx, *owner); err == nil && src != nil {
+				who = fmt.Sprintf("source %q", src.Name)
+			}
+		}
+		return fmt.Errorf("group %q belongs to %s; give this source's groups a prefix of their own, or refer to that group as a member", id, who)
 	}
 	return nil
 }

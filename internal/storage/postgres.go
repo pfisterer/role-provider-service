@@ -86,6 +86,12 @@ type Store interface {
 	ListGroups(ctx context.Context, query string, sourceID *uuid.UUID, limit int) ([]common.Group, error)
 	UpdateGroup(ctx context.Context, id, displayName, description string) error
 	DeleteGroup(ctx context.Context, id string) error
+	// GroupRelations returns, per group, the relations other than member that
+	// someone holds there directly.
+	GroupRelations(ctx context.Context) (map[string][]string, error)
+	// GroupOwners returns the owning source of each of the given groups that
+	// exists; a nil value means the group was created through the API.
+	GroupOwners(ctx context.Context, ids []string) (map[string]*uuid.UUID, error)
 
 	// Members (tuples)
 	// relation is "member" (or "") or a configured relation; asking for
@@ -169,6 +175,38 @@ func NewPostgresStore(dsn string, log *zap.SugaredLogger) (*PostgresStore, error
 
 	log.Info("PostgreSQL storage initialized and schema migrated")
 	return &PostgresStore{db: db, log: log}, nil
+}
+
+func (s *PostgresStore) GroupRelations(ctx context.Context) (map[string][]string, error) {
+	var rows []struct {
+		ObjID    string `gorm:"column:obj_id"`
+		Relation string `gorm:"column:relation"`
+	}
+	if err := s.db.WithContext(ctx).Raw(
+		`SELECT DISTINCT obj_id, relation FROM tuples WHERE relation <> 'member' ORDER BY obj_id, relation`).
+		Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	out := map[string][]string{}
+	for _, r := range rows {
+		out[r.ObjID] = append(out[r.ObjID], r.Relation)
+	}
+	return out, nil
+}
+
+func (s *PostgresStore) GroupOwners(ctx context.Context, ids []string) (map[string]*uuid.UUID, error) {
+	out := map[string]*uuid.UUID{}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	var rows []DBGroup
+	if err := s.db.WithContext(ctx).Select("id, source_id").Where("id IN ?", ids).Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	for _, r := range rows {
+		out[r.ID] = r.SourceID
+	}
+	return out, nil
 }
 
 // normalizeStoredIDs brings rows written before ids were lowercased into the one

@@ -116,3 +116,43 @@ func TestEngine_KeycloakSource(t *testing.T) {
 		t.Errorf("sync log = %+v", logs)
 	}
 }
+
+// A group belongs to one writer. A second source filling it fails with a
+// message saying whose it is; referring to it as a member is fine.
+func TestEngine_GroupBelongsToOneSource(t *testing.T) {
+	ctx := context.Background()
+	store := storage.NewMemoryStore(zap.NewNop().Sugar())
+	relations, _ := common.NewRelations(nil)
+	engine := NewEngine(store, relations, zap.NewNop().Sugar())
+	csv := &common.Source{ID: uuid.New(), Name: "dhbw-mannheim", Type: common.SourceTypeCSV}
+	other := &common.Source{ID: uuid.New(), Name: "other", Type: common.SourceTypeCSV}
+	for _, s := range []*common.Source{csv, other} {
+		if err := store.CreateSource(ctx, s); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := engine.RunSync(ctx, csv.ID, []byte("group,member\ndhbw-ma,anna@x\n")); err != nil {
+		t.Fatal(err)
+	}
+	// The same source again is fine: it owns the group.
+	if err := engine.RunSync(ctx, csv.ID, []byte("group,member\ndhbw-ma,ben@x\n")); err != nil {
+		t.Fatal(err)
+	}
+
+	err := engine.RunSync(ctx, other.ID, []byte("group,member\ndhbw-ma,carla@x\n"))
+	if err == nil || !strings.Contains(err.Error(), `"dhbw-mannheim"`) {
+		t.Fatalf("expected a collision naming the owner, got %v", err)
+	}
+	if toks, _ := store.GetUserTokens(ctx, "carla@x"); slices.Contains(toks, "group:dhbw-ma") {
+		t.Error("the refused sync wrote into the other source's group")
+	}
+
+	// Referring to it is how two sources are combined on purpose.
+	if err := engine.RunSync(ctx, other.ID, []byte("group,member\nbwidm-alle,group:dhbw-ma\n")); err != nil {
+		t.Fatalf("referring to another source's group: %v", err)
+	}
+	if toks, _ := store.GetUserTokens(ctx, "ben@x"); !slices.Contains(toks, "group:bwidm-alle") {
+		t.Errorf("tokens = %v", toks)
+	}
+}

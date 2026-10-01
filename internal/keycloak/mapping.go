@@ -80,8 +80,15 @@ func ParseMapping(raw string, relations common.Relations) (Mapping, error) {
 		}
 	}
 
+	// In a fixed order, so the same mapping always fails with the same message.
 	roles := make(map[string]string, len(m.Roles))
-	for value, relation := range m.Roles {
+	values := make([]string, 0, len(m.Roles))
+	for value := range m.Roles {
+		values = append(values, value)
+	}
+	slices.Sort(values)
+	for _, value := range values {
+		relation := m.Roles[value]
 		rel, err := relations.Check(relation)
 		if err != nil {
 			return Mapping{}, fmt.Errorf("keycloak mapping: role %q: %w", value, err)
@@ -206,4 +213,17 @@ func (m Mapping) Descriptions() map[string]string {
 		out[m.AllGroup.Group] = m.AllGroup.Description
 	}
 	return out
+}
+
+// Groups returns every group the mapping fills.
+func (m Mapping) Groups() []string {
+	var out []string
+	for _, g := range m.Locations {
+		out = append(out, g.Group)
+	}
+	if m.AllGroup != nil {
+		out = append(out, m.AllGroup.Group)
+	}
+	slices.Sort(out)
+	return slices.Compact(out)
 }

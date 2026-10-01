@@ -77,27 +77,79 @@ func (c *GroupCache) Size() int {
 	return len(c.groups)
 }
 
-// Search returns groups whose ID, display name or description contains query
-// (case-insensitive). An empty query matches all. Results are sorted by ID and
-// truncated to limit (limit <= 0 means no limit). Served entirely from memory.
-func (c *GroupCache) Search(query string, limit int) []common.Group {
-	q := strings.ToLower(strings.TrimSpace(query))
+// Search answers a group search box (see query for the syntax). Besides the
+// groups themselves it offers each relation someone holds in a group as an
+// entry of its own — "group:standort-ma#beschaeftigte" — because that token is
+// what a person wants to enter, and nobody can be expected to know it by heart.
+// The relation's name counts as a search term for that entry.
+//
+// An empty query lists the groups alone, sorted by ID. Otherwise an exact ID
+// comes first, then entries matching more terms, then by ID. limit <= 0 means
+// no limit. Served entirely from memory.
+func (c *GroupCache) Search(raw string, limit int) []common.Group {
+	q := parseQuery(raw)
 
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	out := make([]common.Group, 0, min(len(c.groups), max(limit, 0)))
-	for _, g := range c.groups {
-		if q != "" &&
-			!strings.Contains(strings.ToLower(g.ID), q) &&
-			!strings.Contains(strings.ToLower(g.DisplayName), q) &&
-			!strings.Contains(strings.ToLower(g.Description), q) {
-			continue
+	if q.empty() {
+		n := len(c.groups)
+		if limit > 0 && limit < n {
+			n = limit
 		}
-		out = append(out, g)
-		if limit > 0 && len(out) >= limit {
-			break
+		return append([]common.Group(nil), c.groups[:n]...)
+	}
+
+	type hit struct {
+		group common.Group
+		score int
+	}
+	var hits []hit
+	consider := func(g common.Group, fields []string) {
+		score := q.score(fields)
+		if score < 0 {
+			return
+		}
+		if q.exact(fold(g.ID)) {
+			score += 1000
+		}
+		hits = append(hits, hit{g, score})
+	}
+	for _, g := range c.groups {
+		base := []string{fold(g.ID), fold(g.DisplayName), fold(g.Description)}
+		consider(g, base)
+		for _, rel := range g.Relations {
+			consider(relationEntry(g, rel), append(base, fold(rel), fold(g.ID)+"#"+fold(rel)))
 		}
 	}
+	sort.SliceStable(hits, func(i, j int) bool {
+		if hits[i].score != hits[j].score {
+			return hits[i].score > hits[j].score
+		}
+		return hits[i].group.ID < hits[j].group.ID
+	})
+	if limit > 0 && len(hits) > limit {
+		hits = hits[:limit]
+	}
+	out := make([]common.Group, len(hits))
+	for i, h := range hits {
+		out[i] = h.group
+	}
 	return out
+}
+
+// relationEntry is a group's relation presented as a search result: its token
+// is the relation token, its description the group's with the role named.
+func relationEntry(g common.Group, relation string) common.Group {
+	e := g
+	e.ID = g.ID + common.RelationSeparator + relation
+	e.Token = common.GroupToken(g.ID, relation)
+	e.DisplayName = e.ID
+	desc := g.Description
+	if desc == "" {
+		desc = g.DisplayName
+	}
+	e.Description = strings.TrimSpace(desc + " · Rolle: " + relation)
+	e.Relations = nil
+	return e
 }
