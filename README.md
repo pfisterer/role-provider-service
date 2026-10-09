@@ -80,7 +80,7 @@ With `KEYCLOAK_REALM_URL` set, the service keeps one source of type `keycloak`, 
 }
 ```
 
-The scope picks the location's group, the value the relation held there; a user with a known scope but no mapped value is a plain member. `all_group` receives the same relations across all locations. The two tables are independent, so a combination nobody had yet needs no entry. Nothing is guessed: a scope no location names and a value neither mapped nor ignored grant nothing beyond the location, and are listed with their counts in the run's `notes` in the sync log. Every relation under `roles` must be in `GROUP_RELATIONS`, or the service refuses to start.
+The scope picks the location's group, the value the relation held there; a user with a known scope but no mapped value is a plain member. `all_group` receives the same relations across all locations. The two tables are independent, so a combination nobody had yet needs no entry. Nothing is guessed: a scope no location names and a value neither mapped nor ignored grant nothing beyond the location, and are listed in the run's `notes` in the sync log with the number of users carrying them. Every relation under `roles` must be in `GROUP_RELATIONS`, or the service refuses to start.
 
 Keycloak creates a user at their first sign-in, and that sign-in asks for their tokens. So a token request for an address the last run did not know reads that one user (at most once per ten minutes per address, with a three-second timeout) and adds their memberships under the Keycloak source, which the next run then owns.
 
@@ -141,7 +141,7 @@ With `DB_TYPE=memory` and `DB_ADD_MOCK_DATA=true` the service starts with a smal
 
 **Normally deployed as part of [cloud-self-service](https://github.com/pfisterer/cloud-self-service)**, the umbrella chart that composes this service with the other three and pins it by version — and a pinned chart version pins its `appVersion`, which pins the image tag. Installing this chart on its own works, but then nothing keeps it in step with the services it talks to.
 
-A Helm chart lives in [`helm-chart/`](helm-chart) (deployment, service, optional ingress and secret, with a `values.schema.json` that fails a bad values file at install time instead of at runtime). Instead of letting the chart create the secret, `roleProviderService.existingSecret` can name one that provides the keys `db-connection-string`, `api-tokens` and, optionally, `api-write-tokens`. Images go to `ghcr.io/pfisterer/role-provider-service`; `X.Y.Z-test.N` is the staging channel, plain semver production.
+A Helm chart lives in [`helm-chart/`](helm-chart) (deployment, service, optional ingress and secret, with a `values.schema.json` that fails a bad values file at install time instead of at runtime). Instead of letting the chart create the secret, `roleProviderService.existingSecret` can name one that provides the keys `db-connection-string`, `api-tokens`, optionally `api-write-tokens` and, with the Keycloak source enabled, `keycloak-client-secret`. Images go to `ghcr.io/pfisterer/role-provider-service`; `X.Y.Z-test.N` is the staging channel, plain semver production.
 
 The chart is published as an OCI artifact on every push to `main` whose version is not published yet — neither a chart nor an image version is ever overwritten. Stable versions additionally get a Git tag and a GitHub release.
 
