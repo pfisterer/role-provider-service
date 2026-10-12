@@ -145,6 +145,8 @@ A Helm chart lives in [`helm-chart/`](helm-chart) (deployment, service, optional
 
 The chart is published as an OCI artifact on every push to `main` whose version is not published yet — neither a chart nor an image version is ever overwritten. Stable versions additionally get a Git tag and a GitHub release.
 
+**Releasing from this machine.** Waiting for CI is optional: `make bump V=x.y.z`, commit as `release x.y.z`, then `make publish`. It runs the tests (`make test`), builds the image for linux/amd64 (the build stage runs on the building machine and cross-compiles, so an arm64 Mac builds at native speed), pushes the image and the chart to GHCR and only then pushes the commits — well under a minute. CI then finds the version published and only verifies that it builds; Git tags and GitHub releases of stable versions are still made by CI. `make publish` refuses uncommitted changes and a version that is already published, so a registry version is always exactly one commit. It needs `docker login ghcr.io` and `helm registry login ghcr.io` with a token that may write packages.
+
 ```sh
 helm pull oci://ghcr.io/pfisterer/charts/role-provider-service --version 0.6.8
 ```

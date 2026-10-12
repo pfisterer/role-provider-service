@@ -15,7 +15,7 @@ DOCKER_PLATFORMS ?= linux/amd64,linux/arm64
 
 .DEFAULT_GOAL := all
 
-.PHONY: all build clean doc check-swag generate-docs run dev test tidy lint help \
+.PHONY: publish all build clean doc check-swag generate-docs run dev test tidy lint help \
         docker-build docker-run docker-multi-arch-build helm-update bump version-check
 
 all: generate-docs build
@@ -54,7 +54,7 @@ doc: generate-docs
 build: check-modules
 	@echo "🔨 Building Go binary..."
 	@mkdir -p $(BUILD_DIR)
-	@set -e; go build -o $(BUILD_DIR)/$(BINARY_NAME) $(SRC_DIR)/main.go
+	@set -e; GOOS=$${BUILD_GOOS:-$$(go env GOOS)} GOARCH=$${BUILD_GOARCH:-$$(go env GOARCH)} go build -o $(BUILD_DIR)/$(BINARY_NAME) $(SRC_DIR)/main.go
 	@echo "✅ Binary: ./$(BUILD_DIR)/$(BINARY_NAME)"
 
 check-modules:
@@ -172,3 +172,15 @@ help:
 	@echo "  docker-run       → Build and run Docker container"
 	@echo "  docker-multi-arch-build → Build and push multi-arch image"
 	@echo "  helm-update      → Lint and update Helm chart version from VERSION file"
+
+# make publish — release from this machine instead of waiting for CI, for test and stable versions alike: runs the checks, builds the image for the cluster (linux/amd64; the build stage runs natively and cross-compiles, see the Dockerfile), pushes it and the Helm chart to GHCR, and only then pushes the commits. CI then finds the version published and just verifies that it builds; tags and GitHub releases of stable versions stay with CI. Refuses a dirty tree and a version that is already published, so what is in the registry is always exactly one commit. Needs `docker login ghcr.io` and `helm registry login ghcr.io` with a token that may write packages.
+publish: version-check test
+	@test -z "$$(git status --porcelain)" || { echo "✗ uncommitted changes — commit first"; exit 1; }
+	@set -e; V=$$(tr -d '\n' < VERSION); I=ghcr.io/pfisterer/role-provider-service; \
+	if docker buildx imagetools inspect "$$I:$$V" >/dev/null 2>&1; then echo "✗ $$I:$$V is already published — bump the version first"; exit 1; fi; \
+	echo "🏗️  $$I:$$V (linux/amd64)"; \
+	docker buildx build --platform linux/amd64 --tag "$$I:$$V" --tag "$$I:latest" --push .; \
+	rm -rf tmp/chart && mkdir -p tmp/chart && helm package helm-chart/ --destination tmp/chart >/dev/null; \
+	helm push tmp/chart/*.tgz oci://ghcr.io/pfisterer/charts; \
+	git push; \
+	echo "✅ $$I:$$V and its chart are published, commits pushed — CI only verifies"

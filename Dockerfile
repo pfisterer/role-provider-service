@@ -1,5 +1,7 @@
 ## Stage 1: Builder image
-FROM golang:1-alpine AS builder
+# The build stage runs on the machine that builds (BUILDPLATFORM) and cross-compiles for the target: on an arm64 Mac that is native speed instead of emulation. No cgo is needed, so the binary is static.
+FROM --platform=$BUILDPLATFORM golang:1-alpine AS builder
+ARG TARGETOS TARGETARCH
 
 RUN apk add --no-cache git make build-base
 
@@ -13,7 +15,7 @@ COPY VERSION ./
 COPY cmd/ ./cmd/
 COPY internal/ ./internal/
 
-RUN make all
+RUN CGO_ENABLED=0 BUILD_GOOS=$TARGETOS BUILD_GOARCH=$TARGETARCH make all
 
 ## Stage 2: Production image
 FROM alpine:latest AS final
