@@ -1,6 +1,7 @@
 package webserver
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,6 +13,9 @@ import (
 	"github.com/pfisterer/role-provider-service/internal/storage"
 	syncp "github.com/pfisterer/role-provider-service/internal/sync"
 )
+
+// uploadRoute is the one route whose body may be larger than maxJSONBody.
+const uploadRoute = "/v1/sync/sources/:id/upload"
 
 func registerSyncRoutes(rg *gin.RouterGroup, store storage.Store, engine *syncp.Engine, scheduler *syncp.Scheduler, write gin.HandlerFunc) {
 	s := rg.Group("/sync/sources")
@@ -41,7 +45,7 @@ func listSources(store storage.Store) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		sources, err := store.ListSources(c.Request.Context())
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			internalError(c, err)
 			return
 		}
 		c.JSON(http.StatusOK, sources)
@@ -77,14 +81,19 @@ type createSourceRequest struct {
 func createSource(store storage.Store, scheduler *syncp.Scheduler) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req createSourceRequest
-		if err := c.ShouldBindJSON(&req); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		if !bindJSON(c, &req) {
 			return
 		}
 		typ := strings.ToLower(req.Type)
 		if typ != common.SourceTypeCSV && typ != common.SourceTypeLDIF {
 			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("type must be '%s' or '%s'", common.SourceTypeCSV, common.SourceTypeLDIF)})
 			return
+		}
+		if req.Schedule != "" {
+			if err := syncp.ValidateSchedule(req.Schedule); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+				return
+			}
 		}
 		src := &common.Source{
 			ID:                  uuid.New(),
@@ -96,12 +105,12 @@ func createSource(store storage.Store, scheduler *syncp.Scheduler) gin.HandlerFu
 			FilePath:            req.FilePath,
 		}
 		if err := store.CreateSource(c.Request.Context(), src); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			internalError(c, err)
 			return
 		}
 		if src.Schedule != "" {
 			if err := scheduler.Register(src.ID, src.Schedule); err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("invalid schedule: %s", err)})
+				internalError(c, fmt.Errorf("register schedule of source %s: %w", src.ID, err))
 				return
 			}
 		}
@@ -173,23 +182,31 @@ func updateSource(store storage.Store, scheduler *syncp.Scheduler) gin.HandlerFu
 			return
 		}
 		var req updateSourceRequest
-		if err := c.ShouldBindJSON(&req); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
-		if err := store.UpdateSource(c.Request.Context(), id, req.Name, req.Schedule, req.DNEmailRegexp, req.GroupRelationRegexp, req.FilePath); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		if !bindJSON(c, &req) {
 			return
 		}
 		if req.Schedule != "" {
-			_ = scheduler.Register(id, req.Schedule)
-		} else {
-			scheduler.Unregister(id)
+			if err := syncp.ValidateSchedule(req.Schedule); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+				return
+			}
+		}
+		if err := store.UpdateSource(c.Request.Context(), id, req.Name, req.Schedule, req.DNEmailRegexp, req.GroupRelationRegexp, req.FilePath); err != nil {
+			internalError(c, err)
+			return
 		}
 		src, err := store.GetSource(c.Request.Context(), id)
 		if err != nil {
 			respondError(c, err)
 			return
+		}
+		if src.Schedule != "" {
+			if err := scheduler.Register(id, src.Schedule); err != nil {
+				internalError(c, fmt.Errorf("register schedule of source %s: %w", id, err))
+				return
+			}
+		} else {
+			scheduler.Unregister(id)
 		}
 		c.JSON(http.StatusOK, src)
 	}
@@ -217,7 +234,7 @@ func deleteSource(store storage.Store, scheduler *syncp.Scheduler) gin.HandlerFu
 		}
 		scheduler.Unregister(id)
 		if err := store.DeleteSource(c.Request.Context(), id); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			internalError(c, err)
 			return
 		}
 		c.Status(http.StatusNoContent)
@@ -249,6 +266,9 @@ func uploadAndSync(engine *syncp.Engine) gin.HandlerFunc {
 		}
 		file, _, err := c.Request.FormFile("file")
 		if err != nil {
+			if tooLarge(c, err) {
+				return
+			}
 			c.JSON(http.StatusBadRequest, gin.H{"error": "missing 'file' in multipart form"})
 			return
 		}
@@ -256,12 +276,12 @@ func uploadAndSync(engine *syncp.Engine) gin.HandlerFunc {
 
 		content, err := io.ReadAll(file)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read uploaded file"})
+			internalError(c, fmt.Errorf("read uploaded file: %w", err))
 			return
 		}
 
 		if err := engine.RunSync(c.Request.Context(), id, content); err != nil {
-			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": err.Error()})
+			respondSyncError(c, err)
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"status": "sync completed"})
@@ -290,7 +310,7 @@ func triggerSync(engine *syncp.Engine) gin.HandlerFunc {
 			return
 		}
 		if err := engine.RunSync(c.Request.Context(), id, nil); err != nil {
-			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": err.Error()})
+			respondSyncError(c, err)
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"status": "sync completed"})
@@ -321,9 +341,19 @@ func getSyncLog(store storage.Store) gin.HandlerFunc {
 		limit := 20
 		logs, err := store.ListSyncLogs(c.Request.Context(), id, limit)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			internalError(c, err)
 			return
 		}
 		c.JSON(http.StatusOK, logs)
 	}
+}
+
+// respondSyncError answers 422 with the message when the source's data was refused, and treats everything else (an unknown source, a database failure) like any other error.
+func respondSyncError(c *gin.Context, err error) {
+	var importErr *syncp.ImportError
+	if errors.As(err, &importErr) {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": err.Error()})
+		return
+	}
+	respondError(c, err)
 }

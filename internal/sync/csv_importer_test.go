@@ -1,8 +1,11 @@
 package sync
 
 import (
+	"errors"
 	"strings"
 	"testing"
+
+	"github.com/pfisterer/role-provider-service/internal/common"
 )
 
 func TestParseCSV_Descriptions(t *testing.T) {
@@ -102,5 +105,35 @@ func TestParseCSV_ByteOrderMarkHeader(t *testing.T) {
 	}
 	if len(tuples) != 1 || tuples[0].GroupID != "sg-dski" || tuples[0].Relation != "sekretariat" {
 		t.Fatalf("unexpected tuples %+v", tuples)
+	}
+}
+
+// A quoted cell can carry a comma into a group id; one such id refuses the whole file, naming the line, instead of importing a group that splits into several.
+func TestParseCSV_InvalidIDRefusesTheFile(t *testing.T) {
+	cases := map[string]string{
+		"comma in group":     "group,member\nkurs-a,anna@dhbw.de\n\"root-admin,kurs-x\",pattern:*@student.dhbw.de\n",
+		"hash in group":      "group,member\nkurs-a,anna@dhbw.de\nkurs#x,ben@dhbw.de\n",
+		"non-ascii group":    "group,member\nkurs-a,anna@dhbw.de\ngrüppe,ben@dhbw.de\n",
+		"bad group member":   "group,member\nkurs-a,anna@dhbw.de\nkurs-b,\"group:a,b\"\n",
+		"bad address":        "group,member\nkurs-a,anna@dhbw.de\nkurs-b,\"a,b@dhbw.de\"\n",
+		"catch-all pattern":  "group,member\nkurs-a,anna@dhbw.de\nkurs-b,pattern:*\n",
+		"suffix-only glob":   "group,member\nkurs-a,anna@dhbw.de\nkurs-b,pattern:*dhbw.de\n",
+		"any-domain pattern": "group,member\nkurs-a,anna@dhbw.de\nkurs-b,pattern:*@*\n",
+	}
+	for name, in := range cases {
+		tuples, _, err := ParseCSV(strings.NewReader(in))
+		if !errors.Is(err, common.ErrInvalidID) || tuples != nil {
+			t.Errorf("%s: got %v, %d tuples", name, err, len(tuples))
+			continue
+		}
+		if !strings.Contains(err.Error(), "line 3") {
+			t.Errorf("%s: error does not name the line: %v", name, err)
+		}
+	}
+
+	// Case and surrounding space are normalized, not refused.
+	tuples, _, err := ParseCSV(strings.NewReader("group,member\n Kurs-A , Anna@DHBW.de \n"))
+	if err != nil || tuples[0].GroupID != "kurs-a" || tuples[0].MemberID != "anna@dhbw.de" {
+		t.Errorf("got %v, %+v", err, tuples)
 	}
 }

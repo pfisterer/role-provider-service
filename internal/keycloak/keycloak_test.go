@@ -2,6 +2,7 @@ package keycloak
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -199,5 +200,47 @@ func TestFetchSkipsDisabledUsers(t *testing.T) {
 	}
 	if descriptions["standort-ma"] != "DHBW Mannheim" || descriptions["dhbw"] != "Alle DHBW-Standorte" {
 		t.Errorf("descriptions = %v", descriptions)
+	}
+}
+
+// A mapped group id that is not a valid group id stops the start, like an unknown relation.
+func TestParseMappingRefusesInvalidGroupIDs(t *testing.T) {
+	for _, bad := range []string{
+		strings.Replace(testMapping, `"group": "standort-ma"`, `"group": "standort-ma,root-admin"`, 1),
+		strings.Replace(testMapping, `"group": "dhbw"`, `"group": "dhbw#lehrende"`, 1),
+		strings.Replace(testMapping, `"group": "Standort-CAS"`, `"group": "standort cas"`, 1),
+	} {
+		if _, err := ParseMapping(bad, testRelations(t)); !errors.Is(err, common.ErrInvalidID) {
+			t.Errorf("got %v", err)
+		}
+	}
+}
+
+// An account whose address is not a plain address is skipped and counted, without stopping everybody else's sync.
+func TestFetchSkipsInvalidAddresses(t *testing.T) {
+	users := &fakeUsers{all: []User{
+		affiliated("on@x", "staff@dhbw-mannheim.de"),
+		affiliated("a,b@x", "staff@dhbw-mannheim.de"),
+		affiliated("\"quoted\"@x", "staff@dhbw-mannheim.de"),
+	}}
+	store := storage.NewMemoryStore(zap.NewNop().Sugar())
+	src := NewSource(users, mustMapping(t), store, zap.NewNop().Sugar())
+	tuples, _, notes, err := src.Fetch(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tp := range tuples {
+		if tp.MemberID != "on@x" {
+			t.Errorf("an invalid address got %v", tp)
+		}
+	}
+	if !slices.ContainsFunc(notes, func(n string) bool { return strings.Contains(n, "skipped 2 user(s)") }) {
+		t.Errorf("notes = %v", notes)
+	}
+
+	src.SetSourceID(uuid.New())
+	src.EnsureUser(context.Background(), "a,b@x")
+	if users.lookups != 0 {
+		t.Error("an invalid address was looked up")
 	}
 }

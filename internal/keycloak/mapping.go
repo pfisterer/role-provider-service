@@ -70,6 +70,9 @@ func ParseMapping(raw string, relations common.Relations) (Mapping, error) {
 		if g.Group == "" {
 			return Mapping{}, fmt.Errorf("keycloak mapping: location %q has no group", scope)
 		}
+		if err := common.ValidateGroupID(g.Group); err != nil {
+			return Mapping{}, fmt.Errorf("keycloak mapping: location %q: %w", scope, err)
+		}
 		locations[common.NormalizeID(scope)] = g
 	}
 	m.Locations = locations
@@ -77,6 +80,9 @@ func ParseMapping(raw string, relations common.Relations) (Mapping, error) {
 		m.AllGroup.Group = common.NormalizeID(m.AllGroup.Group)
 		if m.AllGroup.Group == "" {
 			return Mapping{}, fmt.Errorf("keycloak mapping: all_group has no group")
+		}
+		if err := common.ValidateGroupID(m.AllGroup.Group); err != nil {
+			return Mapping{}, fmt.Errorf("keycloak mapping: all_group: %w", err)
 		}
 	}
 

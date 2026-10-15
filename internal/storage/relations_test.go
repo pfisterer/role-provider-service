@@ -170,3 +170,37 @@ func TestRelations_ReplaceTuples(t *testing.T) {
 		})
 	}
 }
+
+// Deleting a group takes its tuples with it: its members lose group:<id> and everything they held only through it, the groups it was a member of no longer list it, and a group created later under the same id starts empty.
+func TestDeleteGroupRemovesItsTuples(t *testing.T) {
+	for name, s := range storesUnderTest(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			seedCourse(t, s)
+			must(t, s.CreateGroup(ctx, &common.Group{ID: "wwi23seb-kurs"}))
+			must(t, s.DeleteGroup(ctx, "wwi23seb-kurs"))
+
+			toks, err := s.GetUserTokens(ctx, "ben@example")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(toks, []string{"user:ben@example"}) {
+				t.Errorf("tokens after delete = %v", toks)
+			}
+			members, _ := s.GetDirectMembers(ctx, "wwi23seb", "")
+			if slices.Contains(members, "group:wwi23seb-kurs") {
+				t.Errorf("the deleted group is still a member: %v", members)
+			}
+			// Others are untouched.
+			if toks, _ := s.GetUserTokens(ctx, "dora@example"); !slices.Contains(toks, "group:fakultaet-wi") {
+				t.Errorf("dora lost her groups: %v", toks)
+			}
+
+			// Re-created under the same id, it has no members.
+			must(t, s.CreateGroup(ctx, &common.Group{ID: "wwi23seb-kurs"}))
+			if members, _ := s.GetAllMembers(ctx, "wwi23seb-kurs", ""); len(members) != 0 {
+				t.Errorf("re-created group inherited %v", members)
+			}
+		})
+	}
+}

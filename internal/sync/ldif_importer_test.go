@@ -1,8 +1,11 @@
 package sync
 
 import (
+	"errors"
 	"strings"
 	"testing"
+
+	"github.com/pfisterer/role-provider-service/internal/common"
 )
 
 const courseLDIF = `dn: cn=wwi23seb,ou=groups,dc=example
@@ -49,5 +52,30 @@ func TestParseLDIF_WithoutMappingEverythingIsMembership(t *testing.T) {
 func TestParseLDIF_MappingNeedsNamedCaptures(t *testing.T) {
 	if _, _, err := ParseLDIF(strings.NewReader(courseLDIF), "mail=([^,]+)", `^(.+)-(dozent)$`); err == nil {
 		t.Fatal("a mapping without named captures must be refused")
+	}
+}
+
+// An LDAP group whose CN is not a valid group id, or a member DN that yields no plain address, refuses the whole file.
+func TestParseLDIF_InvalidIDRefusesTheFile(t *testing.T) {
+	badGroup := courseLDIF + `
+dn: cn=root-admin\2Ckurs-x,ou=groups,dc=example
+objectClass: groupOfNames
+member: mail=eve@example,ou=people,dc=example
+`
+	badGroup2 := courseLDIF + `
+dn: cn=kurs x,ou=groups,dc=example
+objectClass: groupOfNames
+member: mail=eve@example,ou=people,dc=example
+`
+	badMember := courseLDIF + `
+dn: cn=kurs-x,ou=groups,dc=example
+objectClass: groupOfNames
+member: mail=not an address,ou=people,dc=example
+`
+	for name, in := range map[string]string{"escaped comma in cn": badGroup, "space in cn": badGroup2, "member": badMember} {
+		tuples, _, err := ParseLDIF(strings.NewReader(in), "mail=([^,]+)", "")
+		if !errors.Is(err, common.ErrInvalidID) || tuples != nil {
+			t.Errorf("%s: got %v, %d tuples", name, err, len(tuples))
+		}
 	}
 }

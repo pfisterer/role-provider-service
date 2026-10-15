@@ -76,12 +76,11 @@ func (s *Service) refreshCache(ctx context.Context) {
 // ── Groups ────────────────────────────────────────────────────────────────────
 
 func (s *Service) CreateGroup(ctx context.Context, id, displayName, description string) (*common.Group, error) {
-	id = strings.TrimSpace(id)
-	if id == "" {
-		return nil, fmt.Errorf("group id must not be empty")
-	}
 	// Strip prefix if caller accidentally sent "group:foo".
-	id = common.NormalizeID(strings.TrimPrefix(id, common.GroupPrefix))
+	id = common.NormalizeID(strings.TrimPrefix(strings.TrimSpace(id), common.GroupPrefix))
+	if err := common.ValidateGroupID(id); err != nil {
+		return nil, err
+	}
 
 	ctx, cancel := s.ctx(ctx)
 	defer cancel()
@@ -163,6 +162,17 @@ func (s *Service) DeleteGroup(ctx context.Context, token string) error {
 	}
 	ctx, cancel := s.ctx(ctx)
 	defer cancel()
+	// A source's group is exactly its latest data: deleted here, the next run would bring it back. It goes away by leaving the source.
+	g, err := s.store.GetGroup(ctx, id)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return fmt.Errorf("%w: group '%s'", ErrNotFound, token)
+		}
+		return err
+	}
+	if g.SourceID != nil {
+		return fmt.Errorf("%w: group '%s' is maintained by a sync source; remove it from the source and sync again", ErrOwnedBySource, token)
+	}
 	if err := s.store.DeleteGroup(ctx, id); err != nil {
 		return err
 	}
@@ -290,7 +300,11 @@ func parseMemberToken(token string) (typ, id string, err error) {
 	if t == "" {
 		return "", "", fmt.Errorf("%w: got '%s'", ErrInvalidToken, token)
 	}
-	return t, common.NormalizeID(i), nil
+	i = common.NormalizeID(i)
+	if err := common.ValidateMember(t, i); err != nil {
+		return "", "", err
+	}
+	return t, i, nil
 }
 
 func ifEmpty(s, fallback string) string {

@@ -2,6 +2,7 @@ package keycloak
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -80,9 +81,15 @@ func (s *Source) Fetch(ctx context.Context) ([]common.TuplePair, map[string]stri
 	unmapped := newUnmapped()
 	known := make(map[string]bool, len(users))
 	var tuples []common.TuplePair
+	invalid := 0
 	for _, u := range users {
 		email := common.NormalizeID(u.Email)
 		if email == "" || !u.Enabled {
+			continue
+		}
+		// One account with an odd address must not stop everybody's sync; it is skipped and counted in the notes.
+		if common.ValidateEmail(email) != nil {
+			invalid++
 			continue
 		}
 		known[email] = true
@@ -95,6 +102,9 @@ func (s *Source) Fetch(ctx context.Context) ([]common.TuplePair, map[string]stri
 	s.mu.Unlock()
 
 	notes := unmapped.Notes()
+	if invalid > 0 {
+		notes = append(notes, fmt.Sprintf("skipped %d user(s) whose e-mail address is not a plain address", invalid))
+	}
 	if len(notes) > 0 {
 		s.log.Warnw("keycloak sync: attribute values no rule maps", "notes", notes)
 	}
@@ -105,7 +115,7 @@ func (s *Source) Fetch(ctx context.Context) ([]common.TuplePair, map[string]stri
 // memberships. Best effort: a failure only means the next full run adds them.
 func (s *Source) EnsureUser(ctx context.Context, email string) {
 	email = common.NormalizeID(email)
-	if email == "" {
+	if common.ValidateEmail(email) != nil {
 		return
 	}
 	s.mu.Lock()

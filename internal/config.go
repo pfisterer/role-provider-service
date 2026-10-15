@@ -46,6 +46,8 @@ type AppConfiguration struct {
 	// which is always there (e.g. "dozent,studierende"). An import or API call
 	// with any other relation is refused rather than silently dropped.
 	GroupRelations []string `json:"group_relations"`
+	// TrustedProxies are the reverse proxies (addresses or CIDRs) whose X-Forwarded-For is believed for the client IP in the logs. Empty (the default) trusts none.
+	TrustedProxies []string `json:"trusted_proxies"`
 	// Keycloak configures the Keycloak source; an empty RealmURL disables it.
 	Keycloak KeycloakConfig `json:"keycloak"`
 }
@@ -91,6 +93,7 @@ func loadAppConfiguration() (AppConfiguration, error) {
 		MaxResponseLimit:         envconf.Int("MAX_RESPONSE_LIMIT", 50),
 		GroupCacheRefreshSeconds: envconf.Int("GROUP_CACHE_REFRESH_SECONDS", 600),
 		GroupRelations:           envconf.StringSlice("GROUP_RELATIONS", nil),
+		TrustedProxies:           envconf.StringSlice("TRUSTED_PROXIES", nil),
 		Keycloak: KeycloakConfig{
 			RealmURL:     envconf.String("KEYCLOAK_REALM_URL", ""),
 			ClientID:     envconf.String("KEYCLOAK_CLIENT_ID", ""),
@@ -98,6 +101,10 @@ func loadAppConfiguration() (AppConfiguration, error) {
 			Mapping:      envconf.String("KEYCLOAK_MAPPING", ""),
 			SyncSchedule: envconf.String("KEYCLOAK_SYNC_SCHEDULE", "*/15 * * * *"),
 		},
+	}
+	// An unknown backend is a typo, and falling back to the in-memory store would start a service that answers from empty data and forgets every write.
+	if cfg.DBType != "memory" && cfg.DBType != "postgres" {
+		return AppConfiguration{}, fmt.Errorf("DB_TYPE must be \"memory\" or \"postgres\", got %q", cfg.DBType)
 	}
 	if _, err := common.NewRelations(cfg.GroupRelations); err != nil {
 		return AppConfiguration{}, fmt.Errorf("GROUP_RELATIONS: %w", err)

@@ -2,6 +2,7 @@ package sync
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -154,5 +155,39 @@ func TestEngine_GroupBelongsToOneSource(t *testing.T) {
 	}
 	if toks, _ := store.GetUserTokens(ctx, "ben@x"); !slices.Contains(toks, "group:bwidm-alle") {
 		t.Errorf("tokens = %v", toks)
+	}
+}
+
+// failingStore fails the one write a sync ends with, the way a database would.
+type failingStore struct{ storage.Store }
+
+func (failingStore) ReplaceTuples(context.Context, uuid.UUID, []common.TuplePair, map[string]string) (int, int, error) {
+	return 0, 0, errors.New(`pq: duplicate key value violates unique constraint "idx_tuple_uniq" DETAIL: Key (obj_id)=(secret)`)
+}
+
+// What the source delivered is an ImportError, meant for its maintainer; a failure of the database is not, and its text stays out of the sync log the API serves.
+func TestEngine_ImportErrorsAndInternalErrors(t *testing.T) {
+	ctx := context.Background()
+	mem := storage.NewMemoryStore(zap.NewNop().Sugar())
+	relations, _ := common.NewRelations(nil)
+	src := &common.Source{ID: uuid.New(), Name: "kurse", Type: common.SourceTypeCSV}
+	if err := mem.CreateSource(ctx, src); err != nil {
+		t.Fatal(err)
+	}
+
+	var importErr *ImportError
+	err := NewEngine(mem, relations, zap.NewNop().Sugar()).RunSync(ctx, src.ID, []byte("group,member\n\"root-admin,kurs-x\",anna@x\n"))
+	if !errors.As(err, &importErr) || !errors.Is(err, common.ErrInvalidID) {
+		t.Fatalf("invalid id: got %v", err)
+	}
+
+	store := failingStore{mem}
+	err = NewEngine(store, relations, zap.NewNop().Sugar()).RunSync(ctx, src.ID, []byte("group,member\nkurs,anna@x\n"))
+	if err == nil || errors.As(err, &importErr) {
+		t.Fatalf("database failure: got %v", err)
+	}
+	logs, _ := mem.ListSyncLogs(ctx, src.ID, 1)
+	if len(logs) != 1 || strings.Contains(logs[0].ErrorMessage, "secret") || logs[0].ErrorMessage == "" {
+		t.Errorf("sync log = %+v", logs)
 	}
 }

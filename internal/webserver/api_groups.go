@@ -100,8 +100,7 @@ type createGroupRequest struct {
 func createGroup(svc *groupmgmt.Service) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req createGroupRequest
-		if err := c.ShouldBindJSON(&req); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		if !bindJSON(c, &req) {
 			return
 		}
 		g, err := svc.CreateGroup(c.Request.Context(), req.ID, req.DisplayName, req.Description)
@@ -162,8 +161,7 @@ type updateGroupRequest struct {
 func updateGroup(svc *groupmgmt.Service) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req updateGroupRequest
-		if err := c.ShouldBindJSON(&req); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		if !bindJSON(c, &req) {
 			return
 		}
 		g, err := svc.UpdateGroup(c.Request.Context(), c.Param("token"), req.DisplayName, req.Description)
@@ -178,13 +176,14 @@ func updateGroup(svc *groupmgmt.Service) gin.HandlerFunc {
 // deleteGroup godoc
 //
 //	@Summary		Delete group
-//	@Description	Permanently deletes a group and all its member tuples.
+//	@Description	Permanently deletes a group created through the API, together with its members and its memberships in other groups, so nobody keeps group:<id> afterwards. A group maintained by a sync source cannot be deleted here (409): remove it from the source and sync again.
 //	@Tags			groups
 //	@Security		Bearer
 //	@Param			token	path	string	true	"Group token"
 //	@Success		204		"No content"
 //	@Failure		401		{object}	map[string]any	"Unauthorized"
 //	@Failure		404		{object}	map[string]any	"Not found"
+//	@Failure		409		{object}	map[string]any	"Group is maintained by a sync source"
 //	@Failure		500		{object}	map[string]any	"Internal server error"
 //	@ID				deleteGroup
 //	@Router			/v1/groups/{token} [delete]
@@ -252,8 +251,7 @@ type addMemberRequest struct {
 func addMember(svc *groupmgmt.Service) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req addMemberRequest
-		if err := c.ShouldBindJSON(&req); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		if !bindJSON(c, &req) {
 			return
 		}
 		if err := svc.AddMember(c.Request.Context(), c.Param("token"), req.Relation, req.Member); err != nil {

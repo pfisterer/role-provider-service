@@ -62,6 +62,11 @@ func ParseLDIF(r io.Reader, dnEmailRegexp, groupRelationRegexp string) ([]common
 		// Strip accidental "group:" prefix.
 		groupID = strings.TrimPrefix(groupID, common.GroupPrefix)
 		groupID, relation := splitByRelationRegexp(relRe, groupID)
+		groupID = common.NormalizeID(groupID)
+		// One malformed id refuses the whole file, as for CSV.
+		if err := common.ValidateGroupID(groupID); err != nil {
+			return nil, nil, fmt.Errorf("ldif entry %q: %w", e.DN, err)
+		}
 
 		// A relation group describes the role, not the group it points at, so
 		// only a plain group's description lands on the group.
@@ -75,9 +80,12 @@ func ParseLDIF(r io.Reader, dnEmailRegexp, groupRelationRegexp string) ([]common
 			e.GetAttributeValues("uniqueMember")...,
 		)
 		for _, dn := range memberDNs {
-			email := extractViaRegexp(re, dn)
+			email := common.NormalizeID(extractViaRegexp(re, dn))
 			if email == "" {
 				continue
+			}
+			if err := common.ValidateEmail(email); err != nil {
+				return nil, nil, fmt.Errorf("ldif entry %q, member %q: %w", e.DN, dn, err)
 			}
 			tuples = append(tuples, common.TuplePair{
 				GroupID:    groupID,

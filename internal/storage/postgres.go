@@ -172,6 +172,9 @@ func NewPostgresStore(dsn string, log *zap.SugaredLogger) (*PostgresStore, error
 	if err := normalizeStoredIDs(db); err != nil {
 		return nil, fmt.Errorf("failed to normalize stored ids: %w", err)
 	}
+	if err := addIDConstraints(db); err != nil {
+		return nil, fmt.Errorf("failed to add id constraints: %w", err)
+	}
 
 	log.Info("PostgreSQL storage initialized and schema migrated")
 	return &PostgresStore{db: db, log: log}, nil
@@ -234,6 +237,31 @@ func normalizeStoredIDs(db *gorm.DB) error {
 		}
 		return nil
 	})
+}
+
+// idConstraints are the CHECK constraints that hold group ids to common.GroupIDPattern in the database too, so no path that bypasses the service's validation can store an id that splits a token or a list.
+var idConstraints = []struct{ table, name, check string }{
+	{"groups", "groups_id_format", "id ~ '" + common.GroupIDPattern + "'"},
+	{"tuples", "tuples_obj_id_format", "obj_id ~ '" + common.GroupIDPattern + "'"},
+	{"tuples", "tuples_group_subj_id_format", "subj_type <> 'group' OR subj_id ~ '" + common.GroupIDPattern + "'"},
+}
+
+// addIDConstraints adds each constraint in idConstraints that does not exist yet. Adding one validates every existing row, so data that does not comply stops the start with the constraint's name instead of being kept silently.
+func addIDConstraints(db *gorm.DB) error {
+	for _, c := range idConstraints {
+		var exists bool
+		if err := db.Raw(`SELECT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = ? AND conrelid = ?::regclass)`, c.name, c.table).
+			Scan(&exists).Error; err != nil {
+			return err
+		}
+		if exists {
+			continue
+		}
+		if err := db.Exec(fmt.Sprintf(`ALTER TABLE %s ADD CONSTRAINT %s CHECK (%s)`, c.table, c.name, c.check)).Error; err != nil {
+			return fmt.Errorf("%s: %w", c.name, err)
+		}
+	}
+	return nil
 }
 
 // ── Groups ────────────────────────────────────────────────────────────────────
@@ -299,8 +327,14 @@ func (s *PostgresStore) UpdateGroup(ctx context.Context, id, displayName, descri
 		Updates(map[string]any{"display_name": displayName, "description": description}).Error
 }
 
+// DeleteGroup removes the group together with its tuples, in one transaction: its members (obj_id) and its memberships in other groups (a group subject). Left behind, its members would keep group:<id> in their tokens, and a group created later under the same id would inherit them.
 func (s *PostgresStore) DeleteGroup(ctx context.Context, id string) error {
-	return s.db.WithContext(ctx).Where("id = ?", id).Delete(&DBGroup{}).Error
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("obj_id = ? OR (subj_type = 'group' AND subj_id = ?)", id, id).Delete(&DBTuple{}).Error; err != nil {
+			return err
+		}
+		return tx.Where("id = ?", id).Delete(&DBGroup{}).Error
+	})
 }
 
 func dbGroupToCommon(r *DBGroup) *common.Group {
@@ -407,7 +441,9 @@ ORDER BY subj_type, subj_id`
 func (s *PostgresStore) GetUserTokens(ctx context.Context, email string) ([]string, error) {
 	// Pattern rules matching the email. Glob matching is done in Go (for parity
 	// with the in-memory store and to keep the recursive SQL simple); the
-	// matched group IDs are injected into the CTE seed via $2.
+	// matched group IDs are injected into the CTE seed via $2, bound as a real
+	// text[] parameter: a list joined into a string would let one id split into
+	// several.
 	patterns, err := s.patternMatches(ctx, email)
 	if err != nil {
 		return nil, err
@@ -416,11 +452,6 @@ func (s *PostgresStore) GetUserTokens(ctx context.Context, email string) ([]stri
 	for _, p := range patterns {
 		patternGroups = append(patternGroups, p.ObjID)
 	}
-	// Join group IDs (which never contain commas — enforced by the CSV format)
-	// into a plain string param; string_to_array avoids driver-specific []string
-	// array binding. The seed branch is skipped entirely when there are no matches.
-	patternCSV := strings.Join(patternGroups, ",")
-
 	// user_groups: membership, any relation. The final SELECT adds the
 	// non-member relations held directly or through one of those groups.
 	const query = `
@@ -429,7 +460,7 @@ WITH RECURSIVE user_groups AS (
     FROM tuples
     WHERE subj_type = 'user' AND subj_id = $1
   UNION
-    SELECT unnest(string_to_array($2, ',')) WHERE $2 <> ''
+    SELECT unnest($2::text[])
   UNION
     SELECT t.obj_id
     FROM tuples t
@@ -451,7 +482,7 @@ ORDER BY relation, obj_id`
 		Relation string `gorm:"column:relation"`
 	}
 	var rows []row
-	if err := s.db.WithContext(ctx).Raw(query, email, patternCSV).Scan(&rows).Error; err != nil {
+	if err := s.db.WithContext(ctx).Raw(query, email, patternGroups).Scan(&rows).Error; err != nil {
 		return nil, err
 	}
 	tokens := make([]string, 0, len(rows)+1)

@@ -131,8 +131,9 @@ version-check:
 	echo "✅ version $$v is consistent"
 
 # Update helm chart version from VERSION file
+# The defaults alone do not pass the schema on purpose (no API token is set), so the lint names an existing Secret the way every deployment does.
 helm-update:
-	helm lint helm-chart/
+	helm lint helm-chart/ --set roleProviderService.existingSecret=lint
 	@echo "✅ Helm chart linted successfully."
 	@VERSION=$$(cat VERSION | tr -d '\n'); \
 	sed -e "s/^version: .*/version: $$VERSION/" \

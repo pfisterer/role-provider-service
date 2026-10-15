@@ -2,6 +2,8 @@ package sync
 
 import (
 	"context"
+	"fmt"
+	gosync "sync"
 
 	"github.com/google/uuid"
 	"github.com/pfisterer/role-provider-service/internal/storage"
@@ -15,7 +17,17 @@ type Scheduler struct {
 	engine *Engine
 	store  storage.Store
 	log    *zap.SugaredLogger
-	jobs   map[uuid.UUID]cron.EntryID
+	// mu guards jobs: HTTP handlers register and unregister concurrently.
+	mu   gosync.Mutex
+	jobs map[uuid.UUID]cron.EntryID
+}
+
+// ValidateSchedule checks a cron expression the way Register will parse it, so a source is never stored with a schedule that cannot run.
+func ValidateSchedule(schedule string) error {
+	if _, err := cron.ParseStandard(schedule); err != nil {
+		return fmt.Errorf("invalid schedule %q: %w", schedule, err)
+	}
+	return nil
 }
 
 func NewScheduler(engine *Engine, store storage.Store, log *zap.SugaredLogger) *Scheduler {
@@ -42,7 +54,10 @@ func (s *Scheduler) Start(ctx context.Context) error {
 		}
 	}
 	s.cron.Start()
-	s.log.Infow("sync scheduler started", "registered_jobs", len(s.jobs))
+	s.mu.Lock()
+	registered := len(s.jobs)
+	s.mu.Unlock()
+	s.log.Infow("sync scheduler started", "registered_jobs", registered)
 	return nil
 }
 
@@ -53,7 +68,8 @@ func (s *Scheduler) Stop() {
 
 // Register adds or replaces the cron schedule for a source.
 func (s *Scheduler) Register(sourceID uuid.UUID, schedule string) error {
-	s.Unregister(sourceID)
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	entryID, err := s.cron.AddFunc(schedule, func() {
 		s.log.Infow("scheduled sync triggered", "source_id", sourceID)
@@ -64,6 +80,8 @@ func (s *Scheduler) Register(sourceID uuid.UUID, schedule string) error {
 	if err != nil {
 		return err
 	}
+	// The old job goes only once the new one is in, so a bad schedule leaves the source running as before.
+	s.unregisterLocked(sourceID)
 	s.jobs[sourceID] = entryID
 	s.log.Infow("cron job registered", "source_id", sourceID, "schedule", schedule)
 	return nil
@@ -71,6 +89,12 @@ func (s *Scheduler) Register(sourceID uuid.UUID, schedule string) error {
 
 // Unregister removes the cron job for a source.
 func (s *Scheduler) Unregister(sourceID uuid.UUID) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.unregisterLocked(sourceID)
+}
+
+func (s *Scheduler) unregisterLocked(sourceID uuid.UUID) {
 	if id, ok := s.jobs[sourceID]; ok {
 		s.cron.Remove(id)
 		delete(s.jobs, sourceID)

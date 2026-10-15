@@ -3,6 +3,7 @@ package webserver
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -32,10 +33,12 @@ type SetupConfig struct {
 	// CORSAllowedOrigins are the browser origins allowed to call /v1
 	// cross-origin. Empty means none — see ginweb.EnableCORS.
 	CORSAllowedOrigins []string
+	// TrustedProxies are the addresses or CIDRs of reverse proxies whose X-Forwarded-For is believed. Empty trusts none, so the client IP in the logs is the peer's address and cannot be set by the client.
+	TrustedProxies []string
 }
 
 // SetupRouter configures and returns the Gin engine.
-func SetupRouter(cfg SetupConfig) *gin.Engine {
+func SetupRouter(cfg SetupConfig) (*gin.Engine, error) {
 	if cfg.DevMode {
 		gin.SetMode(gin.TestMode)
 	} else {
@@ -43,6 +46,10 @@ func SetupRouter(cfg SetupConfig) *gin.Engine {
 	}
 
 	router := gin.New()
+	// Gin trusts every proxy by default, which lets any client choose the address c.ClientIP() reports.
+	if err := router.SetTrustedProxies(cfg.TrustedProxies); err != nil {
+		return nil, fmt.Errorf("trusted proxies: %w", err)
+	}
 
 	if cfg.DevMode {
 		router.Use(ginweb.DisableCaching())
@@ -73,6 +80,8 @@ func SetupRouter(cfg SetupConfig) *gin.Engine {
 		Log:            cfg.Log,
 	})
 
+	apiGroup.Use(limitRequestBody())
+
 	// Authentication.
 	apiGroup.Use(BearerAuthMiddleware(cfg.APITokens, cfg.APIWriteTokens, cfg.Log))
 	// Response bodies here are group memberships: names and mail addresses of
@@ -91,7 +100,7 @@ func SetupRouter(cfg SetupConfig) *gin.Engine {
 	registerSyncRoutes(apiGroup, cfg.Store, cfg.SyncEngine, cfg.Scheduler, write)
 	registerAdminRoutes(apiGroup, cfg.Store)
 
-	return router
+	return router, nil
 }
 
 // indexHTML is a plain landing page. It deliberately embeds NO third-party
@@ -145,6 +154,14 @@ func accessLoggingMiddleware(log *zap.SugaredLogger) gin.HandlerFunc {
 		c.Next()
 		log.Infof("%s %s → %d (%s)", c.Request.Method, requestPath(c),
 			c.Writer.Status(), time.Since(start).Round(time.Millisecond))
+		logRequestErrors(c, log)
+	}
+}
+
+// logRequestErrors logs the errors a handler attached with c.Error — those whose text the client does not get (see internalError).
+func logRequestErrors(c *gin.Context, log *zap.SugaredLogger) {
+	for _, e := range c.Errors {
+		log.Errorw("request failed", "method", c.Request.Method, "path", c.Request.URL.Path, "status", c.Writer.Status(), zap.Error(e.Err))
 	}
 }
 
@@ -178,5 +195,6 @@ func debugLoggingMiddleware(log *zap.SugaredLogger) gin.HandlerFunc {
 		} else {
 			log.Infof("%s %s (%s)", c.Request.Method, path, elapsed)
 		}
+		logRequestErrors(c, log)
 	}
 }

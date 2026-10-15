@@ -35,6 +35,27 @@
         "db",
         "api"
       ],
+      "if": {
+        "properties": {
+          "existingSecret": {
+            "const": ""
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "api": {
+            "properties": {
+              "tokens": {
+                "minLength": 32,
+                "not": {
+                  "const": "change-me"
+                }
+              }
+            }
+          }
+        }
+      },
       "properties": {
         "image": {
           "type": "string",
@@ -115,7 +136,7 @@
             },
             "tokens": {
               "type": "string",
-              "minLength": 1
+              "description": "Read-only API tokens, comma-separated. Only used when the chart creates its own Secret; then it must be set to a real secret (at least 32 characters, not the old placeholder change-me)."
             },
             "writeTokens": {
               "type": "string"

@@ -14,6 +14,12 @@ import (
 	"go.uber.org/zap"
 )
 
+// ImportError is a sync refused because of what the source delivered: an unreadable file, a malformed id, an unknown relation, a group that belongs to someone else. Its message is meant for whoever maintains the source; every other error from RunSync is internal.
+type ImportError struct{ Err error }
+
+func (e *ImportError) Error() string { return e.Err.Error() }
+func (e *ImportError) Unwrap() error { return e.Err }
+
 // Engine orchestrates sync runs for a single source.
 type Engine struct {
 	store     storage.Store
@@ -68,6 +74,9 @@ func (e *Engine) RunSync(ctx context.Context, sourceID uuid.UUID, content []byte
 		tuples, descriptions, logEntry.Notes, parseErr = e.fetchKeycloak(ctx, content)
 	} else {
 		tuples, descriptions, parseErr = e.parseTuples(src, content)
+		if parseErr != nil {
+			parseErr = &ImportError{parseErr}
+		}
 	}
 	if parseErr == nil {
 		tuples, descriptions = normalizeIDs(tuples, descriptions)
@@ -82,6 +91,7 @@ func (e *Engine) RunSync(ctx context.Context, sourceID uuid.UUID, content []byte
 		logEntry.ErrorMessage = parseErr.Error()
 		_ = e.store.UpdateSyncLog(ctx, logEntry)
 		_ = e.store.UpdateSourceSyncStatus(ctx, sourceID, common.SyncStatusError, now)
+		e.log.Errorw("sync refused, nothing was changed", "source_id", sourceID, "source", src.Name, zap.Error(parseErr))
 		return parseErr
 	}
 
@@ -94,7 +104,9 @@ func (e *Engine) RunSync(ctx context.Context, sourceID uuid.UUID, content []byte
 	logEntry.TuplesRemoved = removed
 
 	if replaceErr != nil {
-		logEntry.ErrorMessage = replaceErr.Error()
+		// The database's own message stays in the service log; the sync log is readable through the API.
+		e.log.Errorw("sync: storing the import failed", "source_id", sourceID, zap.Error(replaceErr))
+		logEntry.ErrorMessage = "storing the import failed (internal error, see the service log)"
 		_ = e.store.UpdateSyncLog(ctx, logEntry)
 		_ = e.store.UpdateSourceSyncStatus(ctx, sourceID, common.SyncStatusError, now)
 		return replaceErr
@@ -118,7 +130,7 @@ func (e *Engine) checkRelations(tuples []common.TuplePair) error {
 	for i := range tuples {
 		rel, err := e.relations.Check(tuples[i].Relation)
 		if err != nil {
-			return fmt.Errorf("group %q: %w", tuples[i].GroupID, err)
+			return &ImportError{fmt.Errorf("group %q: %w", tuples[i].GroupID, err)}
 		}
 		tuples[i].Relation = rel
 	}
@@ -162,7 +174,7 @@ func CheckOwnership(ctx context.Context, store storage.Store, sourceID uuid.UUID
 				who = fmt.Sprintf("source %q", src.Name)
 			}
 		}
-		return fmt.Errorf("group %q belongs to %s; give this source's groups a prefix of their own, or refer to that group as a member", id, who)
+		return &ImportError{fmt.Errorf("group %q belongs to %s; give this source's groups a prefix of their own, or refer to that group as a member", id, who)}
 	}
 	return nil
 }
@@ -171,7 +183,7 @@ func CheckOwnership(ctx context.Context, store storage.Store, sourceID uuid.UUID
 // refused rather than ignored, so nobody believes they replaced its data.
 func (e *Engine) fetchKeycloak(ctx context.Context, content []byte) ([]common.TuplePair, map[string]string, []string, error) {
 	if content != nil {
-		return nil, nil, nil, fmt.Errorf("a keycloak source reads Keycloak and takes no upload")
+		return nil, nil, nil, &ImportError{fmt.Errorf("a keycloak source reads Keycloak and takes no upload")}
 	}
 	if e.keycloak == nil {
 		return nil, nil, nil, fmt.Errorf("no keycloak connection is configured")

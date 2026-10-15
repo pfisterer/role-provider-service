@@ -64,20 +64,26 @@ func ParseCSV(r io.Reader) ([]common.TuplePair, map[string]string, error) {
 		}
 
 		// Strip "group:" prefix if present in the group column.
-		group = strings.TrimPrefix(group, common.GroupPrefix)
+		group = common.NormalizeID(strings.TrimPrefix(group, common.GroupPrefix))
+
+		// Determine member type.
+		memberType, memberID := resolveMember(member)
+		t := common.TuplePair{
+			GroupID:    group,
+			Relation:   common.NormalizeRelation(strings.TrimSpace(cell(record, cols.relation))),
+			MemberType: memberType,
+			MemberID:   common.NormalizeID(memberID),
+		}
+		// One malformed id refuses the whole file: importing the rest would leave out members without anyone noticing, and an id with a "," or "#" in it is not a typo to skip but a different group.
+		if err := common.ValidateTuple(t); err != nil {
+			line, _ := reader.FieldPos(0)
+			return nil, nil, fmt.Errorf("csv line %d: %w", line, err)
+		}
 
 		if desc := strings.TrimSpace(cell(record, cols.description)); desc != "" {
 			descriptions[group] = desc
 		}
-
-		// Determine member type.
-		memberType, memberID := resolveMember(member)
-		tuples = append(tuples, common.TuplePair{
-			GroupID:    group,
-			Relation:   common.NormalizeRelation(strings.TrimSpace(cell(record, cols.relation))),
-			MemberType: memberType,
-			MemberID:   memberID,
-		})
+		tuples = append(tuples, t)
 	}
 	return tuples, descriptions, nil
 }

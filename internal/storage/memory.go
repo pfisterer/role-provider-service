@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/pfisterer/role-provider-service/internal/common"
 	"go.uber.org/zap"
+	"gorm.io/gorm"
 )
 
 // memTuple is the internal representation of a Zanzibar-style tuple.
@@ -103,7 +104,7 @@ func (s *MemoryStore) GetGroup(_ context.Context, id string) (*common.Group, err
 	defer s.mu.RUnlock()
 	g, ok := s.groups[id]
 	if !ok {
-		return nil, fmt.Errorf("group %q not found", id)
+		return nil, fmt.Errorf("group %q: %w", id, gorm.ErrRecordNotFound)
 	}
 	cp := *g
 	return &cp, nil
@@ -160,7 +161,7 @@ func (s *MemoryStore) UpdateGroup(_ context.Context, id, displayName, descriptio
 	defer s.mu.Unlock()
 	g, ok := s.groups[id]
 	if !ok {
-		return fmt.Errorf("group %q not found", id)
+		return fmt.Errorf("group %q: %w", id, gorm.ErrRecordNotFound)
 	}
 	g.DisplayName = displayName
 	g.Description = description
@@ -168,10 +169,19 @@ func (s *MemoryStore) UpdateGroup(_ context.Context, id, displayName, descriptio
 	return nil
 }
 
+// DeleteGroup removes the group with its members and its memberships in other groups (see PostgresStore.DeleteGroup).
 func (s *MemoryStore) DeleteGroup(_ context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.groups, id)
+	kept := s.tuples[:0]
+	for _, t := range s.tuples {
+		if t.objID == id || (t.subjType == "group" && t.subjID == id) {
+			continue
+		}
+		kept = append(kept, t)
+	}
+	s.tuples = kept
 	return nil
 }
 
@@ -387,7 +397,7 @@ func (s *MemoryStore) GetSource(_ context.Context, id uuid.UUID) (*common.Source
 	defer s.mu.RUnlock()
 	src, ok := s.sources[id]
 	if !ok {
-		return nil, fmt.Errorf("source %q not found", id)
+		return nil, fmt.Errorf("source %q: %w", id, gorm.ErrRecordNotFound)
 	}
 	cp := *src
 	return &cp, nil
@@ -414,7 +424,7 @@ func (s *MemoryStore) UpdateSource(_ context.Context, id uuid.UUID, name, schedu
 	defer s.mu.Unlock()
 	src, ok := s.sources[id]
 	if !ok {
-		return fmt.Errorf("source %q not found", id)
+		return fmt.Errorf("source %q: %w", id, gorm.ErrRecordNotFound)
 	}
 	src.Name = name
 	src.Schedule = schedule
@@ -451,7 +461,7 @@ func (s *MemoryStore) UpdateSourceSyncStatus(_ context.Context, id uuid.UUID, st
 	defer s.mu.Unlock()
 	src, ok := s.sources[id]
 	if !ok {
-		return fmt.Errorf("source %q not found", id)
+		return fmt.Errorf("source %q: %w", id, gorm.ErrRecordNotFound)
 	}
 	src.LastSyncStatus = status
 	src.LastSyncedAt = &syncedAt

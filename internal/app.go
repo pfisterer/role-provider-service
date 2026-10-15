@@ -38,11 +38,11 @@ func RunApplication() {
 		if err != nil {
 			log.Fatalw("failed to initialize postgres storage", zap.Error(err))
 		}
-	default:
-		if cfg.DBType != "memory" {
-			log.Warnw("unknown DB_TYPE, falling back to memory store", "db_type", cfg.DBType)
-		}
+	case "memory":
 		store = storage.NewMemoryStore(log)
+	default:
+		// Unreachable: loadAppConfiguration refuses any other value.
+		log.Fatalw("unknown DB_TYPE", "db_type", cfg.DBType)
 	}
 
 	if cfg.DBAddMockData {
@@ -119,7 +119,7 @@ func RunApplication() {
 	}
 
 	// HTTP router.
-	router := webserver.SetupRouter(webserver.SetupConfig{
+	router, err := webserver.SetupRouter(webserver.SetupConfig{
 		DevMode:            cfg.DevMode,
 		Log:                log,
 		APITokens:          cfg.APITokens,
@@ -130,7 +130,11 @@ func RunApplication() {
 		Scheduler:          scheduler,
 		MaxResponseLimit:   cfg.MaxResponseLimit,
 		CORSAllowedOrigins: cfg.CORSAllowedOrigins,
+		TrustedProxies:     cfg.TrustedProxies,
 	})
+	if err != nil {
+		log.Fatalw("http router", zap.Error(err))
+	}
 
 	log.Infow("Listening", "bind", cfg.GinBindString)
 	if err := router.Run(cfg.GinBindString); err != nil {
@@ -150,6 +154,10 @@ func setupKeycloakSource(ctx context.Context, cfg KeycloakConfig, relations comm
 	mapping, err := keycloak.ParseMapping(cfg.Mapping, relations)
 	if err != nil {
 		return uuid.Nil, err
+	}
+
+	if err := syncp.ValidateSchedule(cfg.SyncSchedule); err != nil {
+		return uuid.Nil, fmt.Errorf("KEYCLOAK_SYNC_SCHEDULE: %w", err)
 	}
 
 	sources, err := store.ListSources(ctx)
