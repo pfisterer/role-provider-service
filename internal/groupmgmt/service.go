@@ -487,6 +487,38 @@ func (s *Service) RemoveMember(ctx context.Context, caller Caller, groupToken, r
 	return nil
 }
 
+// ChangeRelation gives an entry of a group the caller maintains another relation, in one step: the person never holds both or neither. Expiry and source stay; if the member holds the new relation already, the two entries become one.
+func (s *Service) ChangeRelation(ctx context.Context, caller Caller, groupToken, memberToken, from, to string) error {
+	from, err := s.checkRelation(from)
+	if err != nil {
+		return err
+	}
+	if to, err = s.checkRelation(to); err != nil {
+		return err
+	}
+	memberType, memberID, err := parseMemberToken(memberToken)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := s.ctx(ctx)
+	defer cancel()
+	g, err := s.localGroup(ctx, caller, groupToken)
+	if err != nil {
+		return err
+	}
+	if from == to {
+		return nil
+	}
+	if err := s.store.ChangeRelation(ctx, g.ID, memberType, memberID, from, to); err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return fmt.Errorf("%w: %s holds no relation %q in group '%s'", ErrNotFound, memberToken, from, g.ID)
+		}
+		return err
+	}
+	s.record(ctx, caller, common.Change{GroupID: g.ID, Action: common.ChangeRelationChanged, Member: common.BuildToken(memberType, memberID), Relation: to, Detail: from})
+	return nil
+}
+
 // GetAllMembers returns the user+group members holding relation ("" = member,
 // i.e. everyone in the group), transitively or direct only.
 func (s *Service) GetAllMembers(ctx context.Context, groupToken, relation string, recursive bool) ([]string, error) {

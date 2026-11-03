@@ -117,6 +117,8 @@ const (
 	ChangeManagerAdded   = "manager_added"
 	ChangeManagerRemoved = "manager_removed"
 	ChangeGroupAdopted   = "group_adopted"
+	// ChangeRelationChanged: Relation is the new relation, Detail the one before.
+	ChangeRelationChanged = "relation_changed"
 )
 
 // Change is one entry in the history of a group maintained here. Changes made by sync sources are not recorded here; their sync log says what a run changed.

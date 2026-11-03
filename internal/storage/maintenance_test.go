@@ -2,12 +2,14 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/pfisterer/role-provider-service/internal/common"
+	"gorm.io/gorm"
 )
 
 // An expired entry grants nothing anywhere membership is resolved, stays listed as expired, and adding it again sets a new expiry.
@@ -171,6 +173,40 @@ func TestSourceReservedNames(t *testing.T) {
 			must(t, s.UpdateSource(ctx, got))
 			if got, _ = s.GetSource(ctx, src.ID); len(got.ReservedNames) != 0 {
 				t.Errorf("reserved after clearing = %v", got.ReservedNames)
+			}
+		})
+	}
+}
+
+// Changing a relation moves the entry in one step and keeps its expiry; onto a relation held already, the two become one, valid as long as the longer.
+func TestChangeRelation(t *testing.T) {
+	ctx := context.Background()
+	soon, later := time.Now().Add(time.Hour), time.Now().Add(48*time.Hour)
+	for name, s := range storesUnderTest(t) {
+		t.Run(name, func(t *testing.T) {
+			src := uuid.New()
+			must(t, s.CreateGroup(ctx, &common.Group{ID: "kurs"}))
+			must(t, s.AddMember(ctx, "kurs", "member", "user", "anna@x", &src, &soon))
+			must(t, s.ChangeRelation(ctx, "kurs", "user", "anna@x", "member", "dozent"))
+			toks, _ := s.GetUserTokens(ctx, "anna@x")
+			if !slices.Contains(toks, "group:kurs#dozent") {
+				t.Errorf("after the change: %v", toks)
+			}
+			listed, _ := s.ListMemberships(ctx, "kurs")
+			if len(listed) != 1 || listed[0].Relation != "dozent" || listed[0].ExpiresAt == nil {
+				t.Errorf("entries = %+v", listed)
+			}
+
+			// Onto a relation held already: one entry, the later end.
+			must(t, s.AddMember(ctx, "kurs", "member", "user", "anna@x", &src, &later))
+			must(t, s.ChangeRelation(ctx, "kurs", "user", "anna@x", "member", "dozent"))
+			listed, _ = s.ListMemberships(ctx, "kurs")
+			if len(listed) != 1 || listed[0].ExpiresAt == nil || listed[0].ExpiresAt.Before(soon.Add(time.Hour)) {
+				t.Errorf("merged entries = %+v", listed)
+			}
+
+			if err := s.ChangeRelation(ctx, "kurs", "user", "nobody@x", "member", "dozent"); !errors.Is(err, gorm.ErrRecordNotFound) {
+				t.Errorf("no such entry: got %v", err)
 			}
 		})
 	}

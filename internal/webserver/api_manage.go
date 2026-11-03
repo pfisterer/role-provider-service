@@ -21,6 +21,7 @@ func registerManageRoutes(rg *gin.RouterGroup, svc *groupmgmt.Service, sourceNam
 	g.DELETE("/:group", manageDeleteGroup(svc))
 	g.POST("/:group/members", manageAddMember(svc))
 	g.DELETE("/:group/members", manageRemoveMember(svc))
+	g.PATCH("/:group/members", manageChangeRelation(svc))
 	g.GET("/:group/effective", manageEffectiveMembers(svc))
 	g.POST("/:group/managers", manageAddManager(svc))
 	g.DELETE("/:group/managers", manageRemoveManager(svc))
@@ -284,6 +285,44 @@ func manageAddMember(svc *groupmgmt.Service) gin.HandlerFunc {
 func manageRemoveMember(svc *groupmgmt.Service) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if err := svc.RemoveMember(c.Request.Context(), callerOf(c), c.Param("group"), c.Query("relation"), c.Query("member")); err != nil {
+			respondError(c, err)
+			return
+		}
+		c.Status(http.StatusNoContent)
+	}
+}
+
+type changeRelationRequest struct {
+	// Member is the entry's token: user:<email>, group:<id> or pattern:<glob>.
+	Member string `json:"member" binding:"required"`
+	// Relation is the entry's relation now; empty means "member".
+	Relation string `json:"relation"`
+	// NewRelation is the relation it gets; empty means "member".
+	NewRelation string `json:"new_relation"`
+}
+
+// manageChangeRelation godoc
+//
+//	@Summary		Change an entry's role
+//	@Description	Gives an entry of a group the caller maintains another relation in one step, keeping its expiry; the history records one change. If the member holds the new relation already, the two entries become one, valid as long as the longer of them.
+//	@Tags			manage
+//	@Accept			json
+//	@Security		Bearer
+//	@Param			group	path	string					true	"Group id"
+//	@Param			body	body	changeRelationRequest	true	"The entry and its new relation"
+//	@Success		204		"Changed"
+//	@Failure		400		{object}	map[string]any	"Bad request"
+//	@Failure		403		{object}	map[string]any	"Not maintained by the caller"
+//	@Failure		404		{object}	map[string]any	"No such entry"
+//	@ID				manageChangeRelation
+//	@Router			/v1/manage/groups/{group}/members [patch]
+func manageChangeRelation(svc *groupmgmt.Service) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var req changeRelationRequest
+		if !bindJSON(c, &req) {
+			return
+		}
+		if err := svc.ChangeRelation(c.Request.Context(), callerOf(c), c.Param("group"), req.Member, req.Relation, req.NewRelation); err != nil {
 			respondError(c, err)
 			return
 		}

@@ -243,6 +243,33 @@ func (s *MemoryStore) RemoveMember(_ context.Context, groupID, relation, memberT
 	return nil
 }
 
+func (s *MemoryStore) ChangeRelation(_ context.Context, groupID, memberType, memberID, from, to string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	from, to = common.NormalizeRelation(from), common.NormalizeRelation(to)
+	subjRel := subjRelFor(memberType)
+	find := func(relation string) int {
+		return slices.IndexFunc(s.tuples, func(t memTuple) bool {
+			return t.objID == groupID && t.relation == relation && t.subjType == memberType && t.subjID == memberID && t.subjRel == subjRel
+		})
+	}
+	old := find(from)
+	if old < 0 {
+		return fmt.Errorf("entry: %w", gorm.ErrRecordNotFound)
+	}
+	if from == to {
+		return nil
+	}
+	target := find(to)
+	if target < 0 {
+		s.tuples[old].relation = to
+		return nil
+	}
+	s.tuples[target].expires = laterExpiry(s.tuples[old].expires, s.tuples[target].expires)
+	s.tuples = slices.Delete(s.tuples, old, old+1)
+	return nil
+}
+
 // GetDirectMembers returns the direct members of a group holding relation.
 // "member" (or "") lists every direct tuple, since each relation implies
 // membership; any other relation lists only its own tuples.

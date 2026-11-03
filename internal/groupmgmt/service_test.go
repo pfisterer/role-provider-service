@@ -376,3 +376,34 @@ func TestHistory(t *testing.T) {
 		t.Errorf("history\n got %q\nwant %q", got, want)
 	}
 }
+
+// A role change is one step and one line in the history; a manager of another group may not make it.
+func TestChangeRelation(t *testing.T) {
+	ctx := context.Background()
+	svc, _ := newTestService(t, "dozent")
+	if _, err := svc.CreateGroup(ctx, admin, "kurs", "", "", []string{"user:dekan@x"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.AddMember(ctx, admin, "group:kurs", "", "user:anna@x", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.ChangeRelation(ctx, person("other@x"), "group:kurs", "user:anna@x", "member", "dozent"); !errors.Is(err, ErrForbidden) {
+		t.Errorf("a non-manager changed a role: %v", err)
+	}
+	if err := svc.ChangeRelation(ctx, person("dekan@x"), "group:kurs", "user:anna@x", "member", "unknown"); !errors.Is(err, ErrInvalidRelation) {
+		t.Errorf("an unknown relation: %v", err)
+	}
+	if err := svc.ChangeRelation(ctx, person("dekan@x"), "group:kurs", "user:anna@x", "member", "dozent"); err != nil {
+		t.Fatal(err)
+	}
+	if toks, _ := svc.GetUserTokens(ctx, "anna@x"); !slices.Contains(toks, "group:kurs#dozent") {
+		t.Errorf("tokens = %v", toks)
+	}
+	if err := svc.ChangeRelation(ctx, person("dekan@x"), "group:kurs", "user:ben@x", "member", "dozent"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("no such entry: %v", err)
+	}
+	h, _ := svc.History(ctx, admin, "group:kurs", 1)
+	if len(h) != 1 || h[0].Action != common.ChangeRelationChanged || h[0].Relation != "dozent" || h[0].Detail != "member" {
+		t.Errorf("history = %+v", h)
+	}
+}

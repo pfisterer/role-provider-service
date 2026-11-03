@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -133,6 +134,8 @@ type Store interface {
 	// AddMember adds a tuple, or sets the expiry of the one that exists; expiresAt nil means it does not expire.
 	AddMember(ctx context.Context, groupID, relation, memberType, memberID string, sourceID *uuid.UUID, expiresAt *time.Time) error
 	RemoveMember(ctx context.Context, groupID, relation, memberType, memberID string) error
+	// ChangeRelation moves an entry from one relation to another in one step, keeping its source and expiry. If the member holds the new relation already, the two entries become one, valid as long as the longer of them; gorm.ErrRecordNotFound if there is no entry to move.
+	ChangeRelation(ctx context.Context, groupID, memberType, memberID, from, to string) error
 	GetDirectMembers(ctx context.Context, groupID, relation string) ([]string, error)
 	// ListMemberships returns every direct entry of a group with relation and expiry, patterns and expired entries included.
 	ListMemberships(ctx context.Context, groupID string) ([]common.Membership, error)
@@ -427,6 +430,47 @@ func (s *PostgresStore) RemoveMember(ctx context.Context, groupID, relation, mem
 		Where("obj_id = ? AND relation = ? AND subj_type = ? AND subj_id = ? AND subj_rel = ?",
 			groupID, common.NormalizeRelation(relation), memberType, memberID, subjRelFor(memberType)).
 		Delete(&DBTuple{}).Error
+}
+
+func (s *PostgresStore) ChangeRelation(ctx context.Context, groupID, memberType, memberID, from, to string) error {
+	from, to = common.NormalizeRelation(from), common.NormalizeRelation(to)
+	subjRel := subjRelFor(memberType)
+	entry := func(tx *gorm.DB, relation string) *gorm.DB {
+		return tx.Model(&DBTuple{}).Where("obj_id = ? AND relation = ? AND subj_type = ? AND subj_id = ? AND subj_rel = ?",
+			groupID, relation, memberType, memberID, subjRel)
+	}
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var old DBTuple
+		if err := entry(tx, from).First(&old).Error; err != nil {
+			return err
+		}
+		if from == to {
+			return nil
+		}
+		var target DBTuple
+		err := entry(tx, to).First(&target).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return entry(tx, from).Update("relation", to).Error
+		}
+		if err != nil {
+			return err
+		}
+		if err := entry(tx, to).Update("expires_at", laterExpiry(old.ExpiresAt, target.ExpiresAt)).Error; err != nil {
+			return err
+		}
+		return entry(tx, from).Delete(&DBTuple{}).Error
+	})
+}
+
+// laterExpiry is the longer of two validities; nil, no end, is the longest.
+func laterExpiry(a, b *time.Time) *time.Time {
+	if a == nil || b == nil {
+		return nil
+	}
+	if a.After(*b) {
+		return a
+	}
+	return b
 }
 
 // GetDirectMembers returns members that are directly in groupID (no recursion)
