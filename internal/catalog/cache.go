@@ -116,7 +116,8 @@ func (c *GroupCache) Search(raw string, limit int) []common.Group {
 		hits = append(hits, hit{g, score})
 	}
 	for _, g := range c.groups {
-		base := []string{fold(g.ID), fold(g.DisplayName), fold(g.Description)}
+		// The source's name is a field like the others, so "zwr" lists the groups maintained here and "bwidm mannheim" narrows to one source.
+		base := []string{fold(g.ID), fold(g.DisplayName), fold(g.Description), fold(g.SourceName)}
 		consider(g, base)
 		for _, rel := range g.Relations {
 			consider(relationEntry(g, rel), append(base, fold(rel), fold(g.ID)+"#"+fold(rel)))

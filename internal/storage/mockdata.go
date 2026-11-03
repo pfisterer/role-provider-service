@@ -36,7 +36,7 @@ func SeedMockData(ctx context.Context, store Store, log *zap.SugaredLogger) erro
 		{"cs-student@cs.com", "cs-student"},
 	}
 	for _, m := range userMemberships {
-		if err := store.AddMember(ctx, m.groupID, common.RelationMember, "user", m.email, nil); err != nil {
+		if err := store.AddMember(ctx, m.groupID, common.RelationMember, "user", m.email, nil, nil); err != nil {
 			return err
 		}
 	}
@@ -49,7 +49,7 @@ func SeedMockData(ctx context.Context, store Store, log *zap.SugaredLogger) erro
 		{"cs-student@cs.com", "studierende"},
 	}
 	for _, m := range courseRoles {
-		if err := store.AddMember(ctx, "wwi23seb", m.relation, "user", m.email, nil); err != nil {
+		if err := store.AddMember(ctx, "wwi23seb", m.relation, "user", m.email, nil, nil); err != nil {
 			return err
 		}
 	}

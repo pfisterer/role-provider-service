@@ -22,9 +22,11 @@ func respondError(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, groupmgmt.ErrNotFound) || errors.Is(err, gorm.ErrRecordNotFound):
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
-	case errors.Is(err, groupmgmt.ErrAlreadyExists) || errors.Is(err, groupmgmt.ErrOwnedBySource):
+	case errors.Is(err, groupmgmt.ErrForbidden):
+		c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
+	case errors.Is(err, groupmgmt.ErrAlreadyExists) || errors.Is(err, groupmgmt.ErrOwnedBySource) || errors.Is(err, groupmgmt.ErrReserved) || errors.Is(err, groupmgmt.ErrCycle):
 		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
-	case errors.Is(err, groupmgmt.ErrInvalidToken) || errors.Is(err, groupmgmt.ErrInvalidRelation) || errors.Is(err, common.ErrInvalidID):
+	case errors.Is(err, groupmgmt.ErrInvalidToken) || errors.Is(err, groupmgmt.ErrInvalidRelation) || errors.Is(err, groupmgmt.ErrInvalidExpiry) || errors.Is(err, common.ErrInvalidID):
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 	default:
 		internalError(c, err)

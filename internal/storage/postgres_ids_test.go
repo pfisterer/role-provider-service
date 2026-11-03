@@ -42,9 +42,9 @@ func TestPostgres_PatternGroupIDIsNotSplit(t *testing.T) {
 		}
 	})
 
-	must(t, pg.AddMember(ctx, "root-admin", "member", "user", "admin@dhbw.de", nil))
-	must(t, pg.AddMember(ctx, "root-admin,kurs-x", "member", "pattern", "*@student.dhbw.de", nil))
-	must(t, pg.AddMember(ctx, "kurs-y", "member", "pattern", "*@student.dhbw.de", nil))
+	must(t, pg.AddMember(ctx, "root-admin", "member", "user", "admin@dhbw.de", nil, nil))
+	must(t, pg.AddMember(ctx, "root-admin,kurs-x", "member", "pattern", "*@student.dhbw.de", nil, nil))
+	must(t, pg.AddMember(ctx, "kurs-y", "member", "pattern", "*@student.dhbw.de", nil, nil))
 
 	toks, err := pg.GetUserTokens(ctx, "eve@student.dhbw.de")
 	if err != nil {
@@ -76,10 +76,10 @@ func TestPostgres_IDConstraints(t *testing.T) {
 		if err := pg.DB().Exec(`INSERT INTO groups (id) VALUES (?)`, id).Error; err == nil {
 			t.Errorf("groups: %q stored", id)
 		}
-		if err := pg.AddMember(ctx, id, "member", "user", "a@x", nil); err == nil {
+		if err := pg.AddMember(ctx, id, "member", "user", "a@x", nil, nil); err == nil {
 			t.Errorf("tuples.obj_id: %q stored", id)
 		}
-		if err := pg.AddMember(ctx, "kurs", "member", "group", id, nil); err == nil {
+		if err := pg.AddMember(ctx, "kurs", "member", "group", id, nil, nil); err == nil {
 			t.Errorf("tuples.subj_id (group): %q stored", id)
 		}
 	}
@@ -87,7 +87,7 @@ func TestPostgres_IDConstraints(t *testing.T) {
 		t.Errorf("valid id refused: %v", err)
 	}
 	// Addresses and patterns are checked by the service, not by this constraint.
-	must(t, pg.AddMember(ctx, "kurs", "member", "pattern", "*@x.example", nil))
+	must(t, pg.AddMember(ctx, "kurs", "member", "pattern", "*@x.example", nil, nil))
 
 	// The constraints are added once and survive a restart.
 	if _, err := NewPostgresStore(os.Getenv("TEST_POSTGRES_DSN"), zap.NewNop().Sugar()); err != nil {

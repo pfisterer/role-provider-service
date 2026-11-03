@@ -41,6 +41,8 @@ type DBSource struct {
 	LastSyncStatus      string `gorm:"not null;default:''"`
 	CreatedAt           time.Time
 	UpdatedAt           time.Time
+	// ReservedNames, comma-separated globs; AutoMigrate adds the column with its default.
+	ReservedNames string `gorm:"not null;default:''"`
 }
 
 func (DBSource) TableName() string { return "sources" }
@@ -73,9 +75,40 @@ type DBTuple struct {
 	SubjRel   string     `gorm:"not null;default:'';uniqueIndex:idx_tuple_uniq"` // "" | "member"
 	SourceID  *uuid.UUID `gorm:"type:uuid;index"`
 	CreatedAt time.Time
+	// ExpiresAt, if set, is when the tuple stops counting. Only tuples maintained here carry one; every query that resolves membership skips expired tuples (see liveTuple).
+	ExpiresAt *time.Time
 }
 
 func (DBTuple) TableName() string { return "tuples" }
+
+// liveTuple is the condition every membership query puts on a tuple: not expired.
+const liveTuple = "(expires_at IS NULL OR expires_at > now())"
+
+// DBManager is a token allowed to maintain a group. Kept apart from the tuples on purpose: every relation in the tuples implies membership, and maintaining a group must not hand out what the group grants.
+type DBManager struct {
+	GroupID   string `gorm:"primaryKey"`
+	Token     string `gorm:"primaryKey"`
+	CreatedBy string `gorm:"not null;default:''"`
+	CreatedAt time.Time
+}
+
+func (DBManager) TableName() string { return "group_managers" }
+
+// DBChange is one entry in the history of a group maintained here.
+type DBChange struct {
+	ID         uuid.UUID `gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
+	GroupID    string    `gorm:"not null;index"`
+	At         time.Time `gorm:"not null;index"`
+	Actor      string    `gorm:"not null"`
+	OnBehalfOf string    `gorm:"not null;default:''"`
+	Action     string    `gorm:"not null"`
+	Member     string    `gorm:"not null;default:''"`
+	Relation   string    `gorm:"not null;default:''"`
+	ExpiresAt  *time.Time
+	Detail     string `gorm:"not null;default:''"`
+}
+
+func (DBChange) TableName() string { return "group_changes" }
 
 // ── Store interface ───────────────────────────────────────────────────────────
 
@@ -97,9 +130,12 @@ type Store interface {
 	// relation is "member" (or "") or a configured relation; asking for
 	// "member" in the listings means everyone in the group, whatever their
 	// relation, since every relation implies membership.
-	AddMember(ctx context.Context, groupID, relation, memberType, memberID string, sourceID *uuid.UUID) error
+	// AddMember adds a tuple, or sets the expiry of the one that exists; expiresAt nil means it does not expire.
+	AddMember(ctx context.Context, groupID, relation, memberType, memberID string, sourceID *uuid.UUID, expiresAt *time.Time) error
 	RemoveMember(ctx context.Context, groupID, relation, memberType, memberID string) error
 	GetDirectMembers(ctx context.Context, groupID, relation string) ([]string, error)
+	// ListMemberships returns every direct entry of a group with relation and expiry, patterns and expired entries included.
+	ListMemberships(ctx context.Context, groupID string) ([]common.Membership, error)
 	GetAllMembers(ctx context.Context, groupID, relation string) ([]string, error)
 	GetUserTokens(ctx context.Context, email string) ([]string, error)
 	SearchUsers(ctx context.Context, query string, limit int) ([]string, error)
@@ -108,7 +144,8 @@ type Store interface {
 	CreateSource(ctx context.Context, s *common.Source) error
 	GetSource(ctx context.Context, id uuid.UUID) (*common.Source, error)
 	ListSources(ctx context.Context) ([]common.Source, error)
-	UpdateSource(ctx context.Context, id uuid.UUID, name, schedule, dnEmailRegexp, groupRelationRegexp, filePath string) error
+	// UpdateSource writes the source's settings: name, schedule, regexps, file path and reserved names.
+	UpdateSource(ctx context.Context, src *common.Source) error
 	DeleteSource(ctx context.Context, id uuid.UUID) error
 	UpdateSourceSyncStatus(ctx context.Context, id uuid.UUID, status string, syncedAt time.Time) error
 
@@ -121,6 +158,19 @@ type Store interface {
 	// ReplaceTuples replaces this source's tuples. descriptions maps group ID →
 	// description as carried by the import; entries update the matching group.
 	ReplaceTuples(ctx context.Context, sourceID uuid.UUID, newTuples []common.TuplePair, descriptions map[string]string) (added, removed int, err error)
+	// MoveToSource hands every group and tuple of one source to another, in one transaction, and returns the ids of the groups moved. from nil means the groups and tuples that belong to no source.
+	MoveToSource(ctx context.Context, from *uuid.UUID, to uuid.UUID) ([]string, error)
+
+	// Managers
+	ListManagers(ctx context.Context, groupID string) ([]common.Manager, error)
+	AddManager(ctx context.Context, groupID string, m common.Manager) error
+	RemoveManager(ctx context.Context, groupID, token string) error
+	// ManagedGroups returns the groups any of the tokens may maintain.
+	ManagedGroups(ctx context.Context, tokens []string) ([]string, error)
+
+	// History
+	AddChange(ctx context.Context, c *common.Change) error
+	ListChanges(ctx context.Context, groupID string, limit int) ([]common.Change, error)
 }
 
 // ── PostgresStore ─────────────────────────────────────────────────────────────
@@ -166,7 +216,7 @@ func NewPostgresStore(dsn string, log *zap.SugaredLogger) (*PostgresStore, error
 	sqlDB.SetMaxOpenConns(10)
 	sqlDB.SetMaxIdleConns(5)
 
-	if err := db.AutoMigrate(&DBGroup{}, &DBSource{}, &DBSyncLog{}, &DBTuple{}); err != nil {
+	if err := db.AutoMigrate(&DBGroup{}, &DBSource{}, &DBSyncLog{}, &DBTuple{}, &DBManager{}, &DBChange{}); err != nil {
 		return nil, fmt.Errorf("failed to migrate database schema: %w", err)
 	}
 	if err := normalizeStoredIDs(db); err != nil {
@@ -186,7 +236,7 @@ func (s *PostgresStore) GroupRelations(ctx context.Context) (map[string][]string
 		Relation string `gorm:"column:relation"`
 	}
 	if err := s.db.WithContext(ctx).Raw(
-		`SELECT DISTINCT obj_id, relation FROM tuples WHERE relation <> 'member' ORDER BY obj_id, relation`).
+		`SELECT DISTINCT obj_id, relation FROM tuples WHERE relation <> 'member' AND ` + liveTuple + ` ORDER BY obj_id, relation`).
 		Scan(&rows).Error; err != nil {
 		return nil, err
 	}
@@ -327,10 +377,14 @@ func (s *PostgresStore) UpdateGroup(ctx context.Context, id, displayName, descri
 		Updates(map[string]any{"display_name": displayName, "description": description}).Error
 }
 
-// DeleteGroup removes the group together with its tuples, in one transaction: its members (obj_id) and its memberships in other groups (a group subject). Left behind, its members would keep group:<id> in their tokens, and a group created later under the same id would inherit them.
+// DeleteGroup removes the group together with its tuples and manager entries, in one transaction: its members (obj_id), its memberships in other groups (a group subject), its managers and the places it manages. Left behind, its members would keep group:<id> in their tokens, and a group created later under the same id would inherit them.
 func (s *PostgresStore) DeleteGroup(ctx context.Context, id string) error {
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Where("obj_id = ? OR (subj_type = 'group' AND subj_id = ?)", id, id).Delete(&DBTuple{}).Error; err != nil {
+			return err
+		}
+		// A manager entry naming the group goes too: a group created later under the same id must not inherit who maintains what.
+		if err := tx.Where("group_id = ? OR token = ? OR token LIKE ?", id, common.GroupPrefix+id, common.GroupPrefix+id+common.RelationSeparator+"%").Delete(&DBManager{}).Error; err != nil {
 			return err
 		}
 		return tx.Where("id = ?", id).Delete(&DBGroup{}).Error
@@ -351,22 +405,21 @@ func dbGroupToCommon(r *DBGroup) *common.Group {
 
 // ── Members / Tuples ──────────────────────────────────────────────────────────
 
-func (s *PostgresStore) AddMember(ctx context.Context, groupID, relation, memberType, memberID string, sourceID *uuid.UUID) error {
-	relation = common.NormalizeRelation(relation)
-	subjRel := subjRelFor(memberType)
+func (s *PostgresStore) AddMember(ctx context.Context, groupID, relation, memberType, memberID string, sourceID *uuid.UUID, expiresAt *time.Time) error {
 	tuple := DBTuple{
-		ObjID:    groupID,
-		Relation: relation,
-		SubjType: memberType,
-		SubjID:   memberID,
-		SubjRel:  subjRel,
-		SourceID: sourceID,
+		ObjID:     groupID,
+		Relation:  common.NormalizeRelation(relation),
+		SubjType:  memberType,
+		SubjID:    memberID,
+		SubjRel:   subjRelFor(memberType),
+		SourceID:  sourceID,
+		ExpiresAt: expiresAt,
 	}
-	// ON CONFLICT DO NOTHING — idempotent
-	return s.db.WithContext(ctx).
-		Where("obj_id = ? AND relation = ? AND subj_type = ? AND subj_id = ? AND subj_rel = ?",
-			groupID, relation, memberType, memberID, subjRel).
-		FirstOrCreate(&tuple).Error
+	// Adding an entry that exists sets its expiry: extending a membership is adding it again with a later date.
+	return s.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "obj_id"}, {Name: "relation"}, {Name: "subj_type"}, {Name: "subj_id"}, {Name: "subj_rel"}},
+		DoUpdates: clause.AssignmentColumns([]string{"expires_at"}),
+	}).Create(&tuple).Error
 }
 
 func (s *PostgresStore) RemoveMember(ctx context.Context, groupID, relation, memberType, memberID string) error {
@@ -381,7 +434,7 @@ func (s *PostgresStore) RemoveMember(ctx context.Context, groupID, relation, mem
 func (s *PostgresStore) GetDirectMembers(ctx context.Context, groupID, relation string) ([]string, error) {
 	var rows []DBTuple
 	// Skip pattern rules — they are membership rules, not concrete members.
-	q := s.db.WithContext(ctx).Where("obj_id = ? AND subj_type <> 'pattern'", groupID)
+	q := s.db.WithContext(ctx).Where("obj_id = ? AND subj_type <> 'pattern' AND "+liveTuple, groupID)
 	if filter := filterFor(common.NormalizeRelation(relation)); filter != "" {
 		q = q.Where("relation = ?", filter)
 	}
@@ -401,6 +454,25 @@ func (s *PostgresStore) GetDirectMembers(ctx context.Context, groupID, relation 
 	return out, nil
 }
 
+func (s *PostgresStore) ListMemberships(ctx context.Context, groupID string) ([]common.Membership, error) {
+	var rows []DBTuple
+	if err := s.db.WithContext(ctx).Where("obj_id = ?", groupID).Order("subj_type, subj_id, relation").Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	now := time.Now()
+	out := make([]common.Membership, len(rows))
+	for i, r := range rows {
+		out[i] = common.Membership{
+			Member:    common.BuildToken(r.SubjType, r.SubjID),
+			Relation:  r.Relation,
+			ExpiresAt: r.ExpiresAt,
+			Expired:   r.ExpiresAt != nil && !r.ExpiresAt.After(now),
+			CreatedAt: r.CreatedAt,
+		}
+	}
+	return out, nil
+}
+
 // GetAllMembers resolves the transitive members holding relation on a group
 // using a recursive CTE. The relation filters only the first level: a
 // sub-group contributes all of its members (group:A in B#dozent makes every
@@ -410,11 +482,12 @@ func (s *PostgresStore) GetAllMembers(ctx context.Context, groupID, relation str
 WITH RECURSIVE expand AS (
     SELECT subj_type, subj_id
     FROM tuples
-    WHERE obj_id = $1 AND ($2 = '' OR relation = $2)
+    WHERE obj_id = $1 AND ($2 = '' OR relation = $2) AND ` + liveTuple + `
   UNION
     SELECT t.subj_type, t.subj_id
     FROM tuples t
     INNER JOIN expand e ON e.subj_type = 'group' AND t.obj_id = e.subj_id
+    WHERE (t.expires_at IS NULL OR t.expires_at > now())
 )
 SELECT DISTINCT subj_type, subj_id FROM expand WHERE subj_type <> 'pattern'
 ORDER BY subj_type, subj_id`
@@ -458,7 +531,7 @@ func (s *PostgresStore) GetUserTokens(ctx context.Context, email string) ([]stri
 WITH RECURSIVE user_groups AS (
     SELECT obj_id
     FROM tuples
-    WHERE subj_type = 'user' AND subj_id = $1
+    WHERE subj_type = 'user' AND subj_id = $1 AND ` + liveTuple + `
   UNION
     SELECT unnest($2::text[])
   UNION
@@ -466,12 +539,13 @@ WITH RECURSIVE user_groups AS (
     FROM tuples t
     INNER JOIN user_groups ug ON t.subj_type = 'group' AND t.subj_id = ug.obj_id
         AND t.subj_rel = 'member'
+    WHERE (t.expires_at IS NULL OR t.expires_at > now())
 )
 SELECT obj_id, 'member' AS relation FROM user_groups
 UNION
 SELECT t.obj_id, t.relation
 FROM tuples t
-WHERE t.relation <> 'member' AND (
+WHERE t.relation <> 'member' AND (t.expires_at IS NULL OR t.expires_at > now()) AND (
     (t.subj_type = 'user' AND t.subj_id = $1)
     OR (t.subj_type = 'group' AND t.subj_rel = 'member' AND t.subj_id IN (SELECT obj_id FROM user_groups))
 )
@@ -516,7 +590,7 @@ ORDER BY relation, obj_id`
 func (s *PostgresStore) SearchUsers(ctx context.Context, query string, limit int) ([]string, error) {
 	q := s.db.WithContext(ctx).Model(&DBTuple{}).
 		Distinct("subj_id").
-		Where("subj_type = 'user'")
+		Where("subj_type = 'user' AND " + liveTuple)
 	if trimmed := strings.TrimSpace(query); trimmed != "" {
 		q = q.Where("subj_id ILIKE ?", "%"+trimmed+"%")
 	}
@@ -543,7 +617,7 @@ type patternMatch struct {
 func (s *PostgresStore) patternMatches(ctx context.Context, email string) ([]patternMatch, error) {
 	var rows []patternMatch
 	if err := s.db.WithContext(ctx).
-		Raw(`SELECT obj_id, relation, subj_id FROM tuples WHERE subj_type = 'pattern'`).
+		Raw(`SELECT obj_id, relation, subj_id FROM tuples WHERE subj_type = 'pattern' AND ` + liveTuple).
 		Scan(&rows).Error; err != nil {
 		return nil, err
 	}
@@ -567,6 +641,7 @@ func (s *PostgresStore) CreateSource(ctx context.Context, src *common.Source) er
 		DNEmailRegexp:       src.DNEmailRegexp,
 		GroupRelationRegexp: src.GroupRelationRegexp,
 		FilePath:            src.FilePath,
+		ReservedNames:       strings.Join(src.ReservedNames, ","),
 	}
 	if err := s.db.WithContext(ctx).Create(&row).Error; err != nil {
 		return fmt.Errorf("create source: %w", err)
@@ -596,14 +671,15 @@ func (s *PostgresStore) ListSources(ctx context.Context) ([]common.Source, error
 	return out, nil
 }
 
-func (s *PostgresStore) UpdateSource(ctx context.Context, id uuid.UUID, name, schedule, dnEmailRegexp, groupRelationRegexp, filePath string) error {
-	return s.db.WithContext(ctx).Model(&DBSource{}).Where("id = ?", id).
+func (s *PostgresStore) UpdateSource(ctx context.Context, src *common.Source) error {
+	return s.db.WithContext(ctx).Model(&DBSource{}).Where("id = ?", src.ID).
 		Updates(map[string]any{
-			"name":                  name,
-			"schedule":              schedule,
-			"dn_email_regexp":       dnEmailRegexp,
-			"group_relation_regexp": groupRelationRegexp,
-			"file_path":             filePath,
+			"name":                  src.Name,
+			"schedule":              src.Schedule,
+			"dn_email_regexp":       src.DNEmailRegexp,
+			"group_relation_regexp": src.GroupRelationRegexp,
+			"file_path":             src.FilePath,
+			"reserved_names":        strings.Join(src.ReservedNames, ","),
 		}).Error
 }
 
@@ -636,11 +712,20 @@ func dbSourceToCommon(r *DBSource) *common.Source {
 		DNEmailRegexp:       r.DNEmailRegexp,
 		GroupRelationRegexp: r.GroupRelationRegexp,
 		FilePath:            r.FilePath,
+		ReservedNames:       splitList(r.ReservedNames),
 		LastSyncedAt:        r.LastSyncedAt,
 		LastSyncStatus:      r.LastSyncStatus,
 		CreatedAt:           r.CreatedAt,
 		UpdatedAt:           r.UpdatedAt,
 	}
+}
+
+// splitList reads a comma-separated column; empty means none.
+func splitList(s string) []string {
+	if s == "" {
+		return nil
+	}
+	return strings.Split(s, ",")
 }
 
 // ── Sync Logs ─────────────────────────────────────────────────────────────────
@@ -833,4 +918,95 @@ func (s *PostgresStore) ReplaceTuples(ctx context.Context, sourceID uuid.UUID, n
 		return nil
 	})
 	return
+}
+
+// ── Moving between sources ───────────────────────────────────────────────────
+
+func (s *PostgresStore) MoveToSource(ctx context.Context, from *uuid.UUID, to uuid.UUID) ([]string, error) {
+	var moved []string
+	owned := func(q *gorm.DB) *gorm.DB {
+		if from == nil {
+			return q.Where("source_id IS NULL")
+		}
+		return q.Where("source_id = ?", *from)
+	}
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := owned(tx.Model(&DBGroup{})).Order("id").Pluck("id", &moved).Error; err != nil {
+			return err
+		}
+		if err := owned(tx.Model(&DBGroup{})).Update("source_id", to).Error; err != nil {
+			return err
+		}
+		return owned(tx.Model(&DBTuple{})).Update("source_id", to).Error
+	})
+	if err != nil {
+		return nil, err
+	}
+	return moved, nil
+}
+
+// ── Managers ─────────────────────────────────────────────────────────────────
+
+func (s *PostgresStore) ListManagers(ctx context.Context, groupID string) ([]common.Manager, error) {
+	var rows []DBManager
+	if err := s.db.WithContext(ctx).Where("group_id = ?", groupID).Order("token").Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	out := make([]common.Manager, len(rows))
+	for i, r := range rows {
+		out[i] = common.Manager{Token: r.Token, CreatedBy: r.CreatedBy, CreatedAt: r.CreatedAt}
+	}
+	return out, nil
+}
+
+func (s *PostgresStore) AddManager(ctx context.Context, groupID string, m common.Manager) error {
+	return s.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).
+		Create(&DBManager{GroupID: groupID, Token: m.Token, CreatedBy: m.CreatedBy}).Error
+}
+
+func (s *PostgresStore) RemoveManager(ctx context.Context, groupID, token string) error {
+	return s.db.WithContext(ctx).Where("group_id = ? AND token = ?", groupID, token).Delete(&DBManager{}).Error
+}
+
+func (s *PostgresStore) ManagedGroups(ctx context.Context, tokens []string) ([]string, error) {
+	var ids []string
+	if len(tokens) == 0 {
+		return ids, nil
+	}
+	err := s.db.WithContext(ctx).Model(&DBManager{}).Distinct("group_id").Where("token IN ?", tokens).Order("group_id").Pluck("group_id", &ids).Error
+	return ids, err
+}
+
+// ── History ──────────────────────────────────────────────────────────────────
+
+func (s *PostgresStore) AddChange(ctx context.Context, c *common.Change) error {
+	if c.ID == uuid.Nil {
+		c.ID = uuid.New()
+	}
+	if c.At.IsZero() {
+		c.At = time.Now().UTC()
+	}
+	return s.db.WithContext(ctx).Create(&DBChange{
+		ID: c.ID, GroupID: c.GroupID, At: c.At, Actor: c.Actor, OnBehalfOf: c.OnBehalfOf,
+		Action: c.Action, Member: c.Member, Relation: c.Relation, ExpiresAt: c.ExpiresAt, Detail: c.Detail,
+	}).Error
+}
+
+func (s *PostgresStore) ListChanges(ctx context.Context, groupID string, limit int) ([]common.Change, error) {
+	q := s.db.WithContext(ctx).Where("group_id = ?", groupID).Order("at DESC")
+	if limit > 0 {
+		q = q.Limit(limit)
+	}
+	var rows []DBChange
+	if err := q.Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	out := make([]common.Change, len(rows))
+	for i, r := range rows {
+		out[i] = common.Change{
+			ID: r.ID, GroupID: r.GroupID, At: r.At, Actor: r.Actor, OnBehalfOf: r.OnBehalfOf,
+			Action: r.Action, Member: r.Member, Relation: r.Relation, ExpiresAt: r.ExpiresAt, Detail: r.Detail,
+		}
+	}
+	return out, nil
 }

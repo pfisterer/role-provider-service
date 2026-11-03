@@ -50,6 +50,22 @@ type AppConfiguration struct {
 	TrustedProxies []string `json:"trusted_proxies"`
 	// Keycloak configures the Keycloak source; an empty RealmURL disables it.
 	Keycloak KeycloakConfig `json:"keycloak"`
+	// LocalSourceName is the name of the source that holds the groups maintained here, shown next to them ("wwi23seb (ZWR)").
+	LocalSourceName string `json:"local_source_name"`
+	// AdoptSources names CSV/LDIF sources whose groups and memberships pass to the local source at startup, after which the source is deleted. Once done there is nothing left to adopt, so the setting can stay until it is removed.
+	AdoptSources []string `json:"adopt_sources"`
+	// OIDC verifies the people who maintain groups through the self-service UI; an empty IssuerURL leaves /v1/manage out.
+	OIDC OIDCConfig `json:"oidc"`
+	// AdminTokens maintain every local group, create and delete groups, and may act on behalf of another person (e.g. group:root-admin).
+	AdminTokens []string `json:"admin_tokens"`
+}
+
+// OIDCConfig is the identity provider whose ID tokens /v1/manage accepts — the one the self-service UI signs people in with.
+type OIDCConfig struct {
+	IssuerURL string `json:"issuer_url"`
+	ClientID  string `json:"client_id"`
+	// JWKSURL, if set, spares the service from reaching the provider at startup (see oidcauth).
+	JWKSURL string `json:"jwks_url"`
 }
 
 // KeycloakConfig is the connection to Keycloak and the rules that turn user
@@ -101,6 +117,14 @@ func loadAppConfiguration() (AppConfiguration, error) {
 			Mapping:      envconf.String("KEYCLOAK_MAPPING", ""),
 			SyncSchedule: envconf.String("KEYCLOAK_SYNC_SCHEDULE", "*/15 * * * *"),
 		},
+		LocalSourceName: envconf.String("LOCAL_SOURCE_NAME", "local"),
+		AdoptSources:    envconf.StringSlice("ADOPT_SOURCES", nil),
+		OIDC: OIDCConfig{
+			IssuerURL: envconf.String("OIDC_ISSUER_URL", ""),
+			ClientID:  envconf.String("OIDC_CLIENT_ID", ""),
+			JWKSURL:   envconf.String("OIDC_JWKS_URL", ""),
+		},
+		AdminTokens: envconf.StringSlice("ADMIN_TOKENS", nil),
 	}
 	// An unknown backend is a typo, and falling back to the in-memory store would start a service that answers from empty data and forgets every write.
 	if cfg.DBType != "memory" && cfg.DBType != "postgres" {
@@ -108,6 +132,13 @@ func loadAppConfiguration() (AppConfiguration, error) {
 	}
 	if _, err := common.NewRelations(cfg.GroupRelations); err != nil {
 		return AppConfiguration{}, fmt.Errorf("GROUP_RELATIONS: %w", err)
+	}
+	if cfg.OIDC.IssuerURL != "" && cfg.OIDC.ClientID == "" {
+		return AppConfiguration{}, fmt.Errorf("OIDC_CLIENT_ID must be set with OIDC_ISSUER_URL")
+	}
+	for i, t := range cfg.AdminTokens {
+		// Compared with resolved tokens, which are lowercase.
+		cfg.AdminTokens[i] = common.NormalizeID(t)
 	}
 
 	return cfg, nil

@@ -191,3 +191,50 @@ func TestEngine_ImportErrorsAndInternalErrors(t *testing.T) {
 		t.Errorf("sync log = %+v", logs)
 	}
 }
+
+// A name another source reserves is refused even before that source has created it, and the local source has nothing to sync.
+func TestEngine_ReservedNamesAndTheLocalSource(t *testing.T) {
+	ctx := context.Background()
+	store := storage.NewMemoryStore(zap.NewNop().Sugar())
+	relations, _ := common.NewRelations(nil)
+	engine := NewEngine(store, relations, zap.NewNop().Sugar())
+	kc := &common.Source{ID: uuid.New(), Name: "keycloak", Type: common.SourceTypeKeycloak, ReservedNames: []string{"standort-*"}}
+	csv := &common.Source{ID: uuid.New(), Name: "dhbw-mannheim", Type: common.SourceTypeCSV}
+	local := &common.Source{ID: uuid.New(), Name: "ZWR", Type: common.SourceTypeLocal}
+	for _, s := range []*common.Source{kc, csv, local} {
+		if err := store.CreateSource(ctx, s); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	err := engine.RunSync(ctx, csv.ID, []byte("group,member\nstandort-fn,anna@x\n"))
+	var importErr *ImportError
+	if !errors.As(err, &importErr) || !strings.Contains(err.Error(), `"keycloak"`) {
+		t.Errorf("a reserved name: got %v", err)
+	}
+
+	err = engine.RunSync(ctx, local.ID, []byte("group,member\nx,anna@x\n"))
+	if !errors.As(err, &importErr) {
+		t.Errorf("syncing the local source: got %v", err)
+	}
+	if logs, _ := store.ListSyncLogs(ctx, local.ID, 0); len(logs) != 0 {
+		t.Errorf("the refused local sync left a log: %v", logs)
+	}
+
+	// A reservation may not claim a group somebody else already has.
+	if _, _, err := store.ReplaceTuples(ctx, csv.ID, []common.TuplePair{{GroupID: "ad-ma-x", MemberType: "user", MemberID: "a@x"}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckReservation(ctx, store, uuid.New(), []string{"ad-ma-*"}); !errors.Is(err, ErrReservationConflict) {
+		t.Errorf("reserving a taken name: got %v", err)
+	}
+	if err := CheckReservation(ctx, store, csv.ID, []string{"ad-ma-*"}); err != nil {
+		t.Errorf("reserving one's own names: %v", err)
+	}
+	if _, err := NormalizeReservedNames([]string{"*"}); !errors.Is(err, common.ErrInvalidID) {
+		t.Errorf("reserving everything: got %v", err)
+	}
+	if got, err := NormalizeReservedNames([]string{" group:Standort-* ", "standort-*", ""}); err != nil || !slices.Equal(got, []string{"standort-*"}) {
+		t.Errorf("normalized = %v, %v", got, err)
+	}
+}

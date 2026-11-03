@@ -24,7 +24,12 @@ type memTuple struct {
 	subjID   string // email or group ID (no prefix)
 	subjRel  string // "member" when subjType == "group", else ""
 	sourceID *uuid.UUID
+	created  time.Time
+	expires  *time.Time
 }
+
+// live reports whether the tuple still counts (see liveTuple).
+func (t memTuple) live() bool { return t.expires == nil || t.expires.After(time.Now()) }
 
 // MemoryStore is a thread-safe, in-memory implementation of the Store interface.
 // It is intended for local development only — data is not persisted across restarts.
@@ -34,6 +39,8 @@ type MemoryStore struct {
 	sources  map[uuid.UUID]*common.Source
 	tuples   []memTuple
 	syncLogs []common.SyncLog
+	managers map[string][]common.Manager // keyed by group ID
+	changes  []common.Change
 	log      *zap.SugaredLogger
 }
 
@@ -41,9 +48,10 @@ type MemoryStore struct {
 func NewMemoryStore(log *zap.SugaredLogger) *MemoryStore {
 	log.Info("In-memory storage initialized (data will not persist across restarts)")
 	return &MemoryStore{
-		groups:  make(map[string]*common.Group),
-		sources: make(map[uuid.UUID]*common.Source),
-		log:     log,
+		groups:   make(map[string]*common.Group),
+		sources:  make(map[uuid.UUID]*common.Source),
+		managers: make(map[string][]common.Manager),
+		log:      log,
 	}
 }
 
@@ -54,7 +62,7 @@ func (s *MemoryStore) GroupRelations(_ context.Context) (map[string][]string, er
 	defer s.mu.RUnlock()
 	seen := map[string]map[string]bool{}
 	for _, t := range s.tuples {
-		if t.relation == common.RelationMember {
+		if t.relation == common.RelationMember || !t.live() {
 			continue
 		}
 		if seen[t.objID] == nil {
@@ -174,6 +182,13 @@ func (s *MemoryStore) DeleteGroup(_ context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.groups, id)
+	delete(s.managers, id)
+	for gid, ms := range s.managers {
+		s.managers[gid] = slices.DeleteFunc(ms, func(m common.Manager) bool {
+			g, _ := common.SplitGroupRelation(strings.TrimPrefix(m.Token, common.GroupPrefix))
+			return strings.HasPrefix(m.Token, common.GroupPrefix) && g == id
+		})
+	}
 	kept := s.tuples[:0]
 	for _, t := range s.tuples {
 		if t.objID == id || (t.subjType == "group" && t.subjID == id) {
@@ -187,14 +202,15 @@ func (s *MemoryStore) DeleteGroup(_ context.Context, id string) error {
 
 // ── Members / Tuples ──────────────────────────────────────────────────────────
 
-func (s *MemoryStore) AddMember(_ context.Context, groupID, relation, memberType, memberID string, sourceID *uuid.UUID) error {
+func (s *MemoryStore) AddMember(_ context.Context, groupID, relation, memberType, memberID string, sourceID *uuid.UUID, expiresAt *time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	relation = common.NormalizeRelation(relation)
 	subjRel := subjRelFor(memberType)
-	for _, t := range s.tuples {
+	for i, t := range s.tuples {
 		if t.objID == groupID && t.relation == relation && t.subjType == memberType && t.subjID == memberID && t.subjRel == subjRel {
-			return nil // idempotent
+			s.tuples[i].expires = expiresAt
+			return nil
 		}
 	}
 	s.tuples = append(s.tuples, memTuple{
@@ -205,6 +221,8 @@ func (s *MemoryStore) AddMember(_ context.Context, groupID, relation, memberType
 		subjID:   memberID,
 		subjRel:  subjRel,
 		sourceID: sourceID,
+		created:  time.Now().UTC(),
+		expires:  expiresAt,
 	})
 	return nil
 }
@@ -236,7 +254,7 @@ func (s *MemoryStore) GetDirectMembers(_ context.Context, groupID, relation stri
 	var out []string
 	for _, t := range s.tuples {
 		// Skip pattern rules — they are membership rules, not concrete members.
-		if t.objID != groupID || t.subjType == "pattern" || !relationMatches(t.relation, filter) {
+		if t.objID != groupID || t.subjType == "pattern" || !t.live() || !relationMatches(t.relation, filter) {
 			continue
 		}
 		token := common.BuildToken(t.subjType, t.subjID)
@@ -246,6 +264,28 @@ func (s *MemoryStore) GetDirectMembers(_ context.Context, groupID, relation stri
 		seen[token] = struct{}{}
 		out = append(out, token)
 	}
+	return out, nil
+}
+
+func (s *MemoryStore) ListMemberships(_ context.Context, groupID string) ([]common.Membership, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := []common.Membership{}
+	for _, t := range s.tuples {
+		if t.objID != groupID {
+			continue
+		}
+		out = append(out, common.Membership{
+			Member:    common.BuildToken(t.subjType, t.subjID),
+			Relation:  t.relation,
+			ExpiresAt: t.expires,
+			Expired:   !t.live(),
+			CreatedAt: t.created,
+		})
+	}
+	slices.SortFunc(out, func(a, b common.Membership) int {
+		return strings.Compare(a.Member+"#"+a.Relation, b.Member+"#"+b.Relation)
+	})
 	return out, nil
 }
 
@@ -271,7 +311,7 @@ func (s *MemoryStore) GetAllMembers(_ context.Context, groupID, relation string)
 		}
 		visited[current] = struct{}{}
 		for _, t := range s.tuples {
-			if t.objID != current.group || t.subjType == "pattern" || !relationMatches(t.relation, filterFor(current.relation)) {
+			if t.objID != current.group || t.subjType == "pattern" || !t.live() || !relationMatches(t.relation, filterFor(current.relation)) {
 				continue
 			}
 			token := common.BuildToken(t.subjType, t.subjID)
@@ -295,8 +335,8 @@ func (s *MemoryStore) GetUserTokens(_ context.Context, email string) ([]string, 
 	defer s.mu.RUnlock()
 
 	matchesUser := func(t memTuple) bool {
-		return (t.subjType == "user" && t.subjID == email) ||
-			(t.subjType == "pattern" && common.MatchEmailPattern(t.subjID, email))
+		return t.live() && ((t.subjType == "user" && t.subjID == email) ||
+			(t.subjType == "pattern" && common.MatchEmailPattern(t.subjID, email)))
 	}
 
 	// Membership: groups the user is directly in (any relation), then every
@@ -320,7 +360,7 @@ func (s *MemoryStore) GetUserTokens(_ context.Context, email string) ([]string, 
 		current := queue[0]
 		queue = queue[1:]
 		for _, t := range s.tuples {
-			if t.subjType == "group" && t.subjID == current {
+			if t.subjType == "group" && t.subjID == current && t.live() {
 				add(t.objID)
 			}
 		}
@@ -335,7 +375,7 @@ func (s *MemoryStore) GetUserTokens(_ context.Context, email string) ([]string, 
 	// a group the user is a member of.
 	seen := map[string]struct{}{}
 	for _, t := range s.tuples {
-		if t.relation == common.RelationMember {
+		if t.relation == common.RelationMember || !t.live() {
 			continue
 		}
 		_, viaGroup := memberOf[t.subjID]
@@ -360,7 +400,7 @@ func (s *MemoryStore) SearchUsers(_ context.Context, query string, limit int) ([
 	seen := map[string]struct{}{}
 	var out []string
 	for _, t := range s.tuples {
-		if t.subjType != "user" {
+		if t.subjType != "user" || !t.live() {
 			continue
 		}
 		if needle != "" && !strings.Contains(strings.ToLower(t.subjID), needle) {
@@ -419,18 +459,19 @@ func (s *MemoryStore) ListSources(_ context.Context) ([]common.Source, error) {
 	return out, nil
 }
 
-func (s *MemoryStore) UpdateSource(_ context.Context, id uuid.UUID, name, schedule, dnEmailRegexp, groupRelationRegexp, filePath string) error {
+func (s *MemoryStore) UpdateSource(_ context.Context, upd *common.Source) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	src, ok := s.sources[id]
+	src, ok := s.sources[upd.ID]
 	if !ok {
-		return fmt.Errorf("source %q: %w", id, gorm.ErrRecordNotFound)
+		return fmt.Errorf("source %q: %w", upd.ID, gorm.ErrRecordNotFound)
 	}
-	src.Name = name
-	src.Schedule = schedule
-	src.DNEmailRegexp = dnEmailRegexp
-	src.GroupRelationRegexp = groupRelationRegexp
-	src.FilePath = filePath
+	src.Name = upd.Name
+	src.Schedule = upd.Schedule
+	src.DNEmailRegexp = upd.DNEmailRegexp
+	src.GroupRelationRegexp = upd.GroupRelationRegexp
+	src.FilePath = upd.FilePath
+	src.ReservedNames = slices.Clone(upd.ReservedNames)
 	src.UpdatedAt = time.Now().UTC()
 	return nil
 }
@@ -563,6 +604,7 @@ func (s *MemoryStore) ReplaceTuples(_ context.Context, sourceID uuid.UUID, newTu
 				subjID:   p.MemberID,
 				subjRel:  subjRelFor(p.MemberType),
 				sourceID: &sid,
+				created:  time.Now().UTC(),
 			})
 			added++
 		}
@@ -582,6 +624,108 @@ func (s *MemoryStore) ReplaceTuples(_ context.Context, sourceID uuid.UUID, newTu
 	}
 	s.tuples = kept
 	return
+}
+
+// ── Moving between sources ───────────────────────────────────────────────────
+
+func (s *MemoryStore) MoveToSource(_ context.Context, from *uuid.UUID, to uuid.UUID) ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	owned := func(id *uuid.UUID) bool {
+		if from == nil {
+			return id == nil
+		}
+		return id != nil && *id == *from
+	}
+	var moved []string
+	for _, g := range s.groups {
+		if owned(g.SourceID) {
+			sid := to
+			g.SourceID = &sid
+			moved = append(moved, g.ID)
+		}
+	}
+	for i := range s.tuples {
+		if owned(s.tuples[i].sourceID) {
+			sid := to
+			s.tuples[i].sourceID = &sid
+		}
+	}
+	slices.Sort(moved)
+	return moved, nil
+}
+
+// ── Managers ─────────────────────────────────────────────────────────────────
+
+func (s *MemoryStore) ListManagers(_ context.Context, groupID string) ([]common.Manager, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := slices.Clone(s.managers[groupID])
+	slices.SortFunc(out, func(a, b common.Manager) int { return strings.Compare(a.Token, b.Token) })
+	return out, nil
+}
+
+func (s *MemoryStore) AddManager(_ context.Context, groupID string, m common.Manager) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, existing := range s.managers[groupID] {
+		if existing.Token == m.Token {
+			return nil
+		}
+	}
+	m.CreatedAt = time.Now().UTC()
+	s.managers[groupID] = append(s.managers[groupID], m)
+	return nil
+}
+
+func (s *MemoryStore) RemoveManager(_ context.Context, groupID, token string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.managers[groupID] = slices.DeleteFunc(s.managers[groupID], func(m common.Manager) bool { return m.Token == token })
+	return nil
+}
+
+func (s *MemoryStore) ManagedGroups(_ context.Context, tokens []string) ([]string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	ids := []string{}
+	for gid, ms := range s.managers {
+		if slices.ContainsFunc(ms, func(m common.Manager) bool { return slices.Contains(tokens, m.Token) }) {
+			ids = append(ids, gid)
+		}
+	}
+	slices.Sort(ids)
+	return ids, nil
+}
+
+// ── History ──────────────────────────────────────────────────────────────────
+
+func (s *MemoryStore) AddChange(_ context.Context, c *common.Change) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if c.ID == uuid.Nil {
+		c.ID = uuid.New()
+	}
+	if c.At.IsZero() {
+		c.At = time.Now().UTC()
+	}
+	s.changes = append(s.changes, *c)
+	return nil
+}
+
+func (s *MemoryStore) ListChanges(_ context.Context, groupID string, limit int) ([]common.Change, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := []common.Change{}
+	for i := len(s.changes) - 1; i >= 0; i-- {
+		if s.changes[i].GroupID == groupID {
+			out = append(out, s.changes[i])
+		}
+	}
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
 }
 
 // subjRelFor is the subject relation stored with a tuple: a group subject always

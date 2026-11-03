@@ -35,6 +35,12 @@ type SetupConfig struct {
 	CORSAllowedOrigins []string
 	// TrustedProxies are the addresses or CIDRs of reverse proxies whose X-Forwarded-For is believed. Empty trusts none, so the client IP in the logs is the peer's address and cannot be set by the client.
 	TrustedProxies []string
+	// Verifier checks the ID tokens of people signed in at the self-service UI. Nil leaves /v1/manage out entirely.
+	Verifier TokenVerifier
+	// AdminTokens maintain every local group and may act on behalf of another person (e.g. group:root-admin).
+	AdminTokens []string
+	// LocalSourceName is the name of the local source, shown next to its groups.
+	LocalSourceName string
 }
 
 // SetupRouter configures and returns the Gin engine.
@@ -71,6 +77,20 @@ func SetupRouter(cfg SetupConfig) (*gin.Engine, error) {
 		c.String(http.StatusOK, strings.ReplaceAll(indexHTML, "__VERSION__", generated_docs.Version))
 	})
 
+	// People maintaining groups, through the self-service UI: an ID token instead of an API token, and nothing but /v1/manage. Registered as a group of its own, so the API-token middleware below never sees these requests and the person middleware never sees the others.
+	if cfg.Verifier != nil {
+		manage := router.Group("/v1/manage")
+		// No CORS here: the UI calls through its own proxy, same-origin. What stays necessary is refusing writes a page from elsewhere makes the browser send — the proxy turns the session cookie into the bearer this route accepts.
+		manage.Use(ginweb.RejectCrossOriginWrites(ginweb.CrossOriginOptions{DevMode: cfg.DevMode, Log: cfg.Log}))
+		manage.Use(limitRequestBody(), personAuthMiddleware(cfg.Verifier, cfg.GroupSvc, cfg.AdminTokens, cfg.Log))
+		if cfg.DevMode {
+			manage.Use(debugLoggingMiddleware(cfg.Log))
+		} else {
+			manage.Use(accessLoggingMiddleware(cfg.Log))
+		}
+		registerManageRoutes(manage, cfg.GroupSvc, cfg.LocalSourceName, cfg.MaxResponseLimit)
+	}
+
 	// CORS.
 	apiGroup := router.Group("/v1")
 	ginweb.EnableCORS(apiGroup, ginweb.CORSOptions{
@@ -97,7 +117,7 @@ func SetupRouter(cfg SetupConfig) (*gin.Engine, error) {
 	write := requireWriteToken(cfg.Log)
 	registerGroupRoutes(apiGroup, cfg.GroupSvc, cfg.MaxResponseLimit, write)
 	registerUserRoutes(apiGroup, cfg.GroupSvc, cfg.Store, cfg.MaxResponseLimit)
-	registerSyncRoutes(apiGroup, cfg.Store, cfg.SyncEngine, cfg.Scheduler, write)
+	registerSyncRoutes(apiGroup, cfg.Store, cfg.SyncEngine, cfg.Scheduler, cfg.GroupSvc, write)
 	registerAdminRoutes(apiGroup, cfg.Store)
 
 	return router, nil

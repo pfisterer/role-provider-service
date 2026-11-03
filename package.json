@@ -1,0 +1,15 @@
+{
+  "name": "role-provider-service-tooling",
+  "private": true,
+  "description": "Build tooling for the generated TypeScript client (make npm-package).",
+  "type": "module",
+  "devDependencies": {
+    "@hey-api/openapi-ts": "^0.99.0",
+    "esbuild": "^0.28.1",
+    "swagger2openapi": "^7.0.8",
+    "typescript": "^6.0.3"
+  },
+  "overrides": {
+    "js-yaml": "^4.3.2"
+  }
+}

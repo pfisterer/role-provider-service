@@ -117,6 +117,24 @@ spec:
             {{- end }}
             {{- end }}
 
+            # ── Local source and group maintenance ──────────────────────────
+            - name: LOCAL_SOURCE_NAME
+              value: {{ .Values.roleProviderService.localSourceName | default "local" | quote }}
+            - name: ADOPT_SOURCES
+              value: {{ join "," (.Values.roleProviderService.adoptSources | default list) | quote }}
+            - name: ADMIN_TOKENS
+              value: {{ join "," (.Values.roleProviderService.adminTokens | default list) | quote }}
+            {{- with .Values.roleProviderService.oidc }}
+            {{- if .issuerUrl }}
+            - name: OIDC_ISSUER_URL
+              value: {{ .issuerUrl | quote }}
+            - name: OIDC_CLIENT_ID
+              value: {{ .clientId | quote }}
+            - name: OIDC_JWKS_URL
+              value: {{ .jwksUrl | default "" | quote }}
+            {{- end }}
+            {{- end }}
+
             # ── Miscellaneous ────────────────────────────────────────────────
             - name: SERVICE_TIMEOUT_SECONDS
               value: {{ .Values.roleProviderService.serviceTimeoutSeconds | toString | quote }}

@@ -44,7 +44,7 @@ func newTestServer(t *testing.T, store storage.Store, trustedProxies []string) t
 		Log:              log,
 		APITokens:        []string{readToken},
 		APIWriteTokens:   []string{writeToken},
-		GroupSvc:         groupmgmt.NewService(store, nil, relations, 5*time.Second, log),
+		GroupSvc:         groupmgmt.NewService(store, nil, relations, uuid.New(), 5*time.Second, log),
 		Store:            store,
 		SyncEngine:       engine,
 		Scheduler:        scheduler,

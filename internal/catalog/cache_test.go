@@ -132,3 +132,18 @@ func TestSearchSyntax(t *testing.T) {
 		t.Errorf("relation entry = %+v", got)
 	}
 }
+
+// The source's name is searchable like the group's own fields.
+func TestSearchBySource(t *testing.T) {
+	c := testCache(t, []common.Group{
+		{ID: "standort-ma", Description: "DHBW Mannheim", SourceName: "keycloak"},
+		{ID: "sg-inf", Description: "Studiengang Informatik Mannheim", SourceName: "ZWR"},
+		{ID: "wwi23seb", SourceName: "ZWR"},
+	})
+	if got := ids(c.Search("zwr", 0)); !slices.Equal(got, []string{"sg-inf", "wwi23seb"}) {
+		t.Errorf("zwr = %v", got)
+	}
+	if got := ids(c.Search("keycloak UND mannheim", 0)); !slices.Equal(got, []string{"standort-ma"}) {
+		t.Errorf("keycloak UND mannheim = %v", got)
+	}
+}

@@ -19,7 +19,7 @@ type Users interface {
 
 // MemberAdder writes one tuple; the store satisfies it.
 type MemberAdder interface {
-	AddMember(ctx context.Context, groupID, relation, memberType, memberID string, sourceID *uuid.UUID) error
+	AddMember(ctx context.Context, groupID, relation, memberType, memberID string, sourceID *uuid.UUID, expiresAt *time.Time) error
 }
 
 // Source is the Keycloak source: a full read on a schedule (Fetch, run by the
@@ -139,7 +139,7 @@ func (s *Source) EnsureUser(ctx context.Context, email string) {
 	}
 	tuples := s.mapping.Derive(email, u.Attributes[s.mapping.Attribute], newUnmapped())
 	for _, t := range tuples {
-		if err := s.store.AddMember(ctx, t.GroupID, t.Relation, t.MemberType, t.MemberID, sourceID); err != nil {
+		if err := s.store.AddMember(ctx, t.GroupID, t.Relation, t.MemberType, t.MemberID, sourceID, nil); err != nil {
 			s.log.Warnw("keycloak lookup: write failed", "email", email, "group", t.GroupID, "error", err)
 			return
 		}

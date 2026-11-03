@@ -28,6 +28,8 @@ const (
 	// Keycloak. There is at most one such source; it is created from the
 	// configuration at startup, not through the API.
 	SourceTypeKeycloak = "keycloak"
+	// SourceTypeLocal holds the groups maintained here, through the API and the self-service UI. There is exactly one such source; it is created at startup, never synced, and owns every group no other source owns.
+	SourceTypeLocal = "local"
 
 	SyncStatusOK      = "ok"
 	SyncStatusError   = "error"
@@ -41,6 +43,8 @@ type Group struct {
 	DisplayName string     `json:"display_name"`
 	Description string     `json:"description"`
 	SourceID    *uuid.UUID `json:"source_id,omitempty"`
+	// SourceName is the name of the source the group belongs to, shown next to the group ("wwi23seb (ZWR)") and searchable like its other fields.
+	SourceName string `json:"source_name,omitempty"`
 	// Relations are the relations someone actually holds in this group
 	// (besides member) — what a search can offer as "group:<id>#<relation>".
 	Relations []string  `json:"relations,omitempty"`
@@ -66,6 +70,8 @@ type Source struct {
 	LastSyncStatus      string     `json:"last_sync_status,omitempty"`
 	CreatedAt           time.Time  `json:"created_at"`
 	UpdatedAt           time.Time  `json:"updated_at"`
+	// ReservedNames are globs ("*" for any run of characters) of the group ids this source may create, now or later. No other source and not the API may create a group matching one, so a group made by hand today cannot block a source that brings it tomorrow.
+	ReservedNames []string `json:"reserved_names,omitempty"`
 }
 
 // SyncLog records the result of a single sync run.
@@ -81,6 +87,52 @@ type SyncLog struct {
 	// source, attribute values no rule maps. Not errors: the run imported
 	// everything it understood.
 	Notes []string `json:"notes,omitempty"`
+}
+
+// Membership is one direct entry of a group as the people maintaining it see it: who, in which relation, and until when.
+type Membership struct {
+	// Member is a token: "user:<email>", "group:<id>" or "pattern:<glob>".
+	Member   string `json:"member"`
+	Relation string `json:"relation"`
+	// ExpiresAt, if set, is when the entry stops counting. An expired entry grants nothing but stays listed until somebody removes it, so it is visible that it ran out.
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+	Expired   bool       `json:"expired,omitempty"`
+	CreatedAt time.Time  `json:"created_at"`
+}
+
+// Manager is a token allowed to maintain a group: "user:<email>", "group:<id>" or "group:<id>#<relation>". Managing a group is not being in it; a manager gains none of the group's rights.
+type Manager struct {
+	Token     string    `json:"token"`
+	CreatedBy string    `json:"created_by,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// Change actions recorded in a group's history.
+const (
+	ChangeGroupCreated   = "group_created"
+	ChangeGroupUpdated   = "group_updated"
+	ChangeGroupDeleted   = "group_deleted"
+	ChangeMemberAdded    = "member_added"
+	ChangeMemberRemoved  = "member_removed"
+	ChangeManagerAdded   = "manager_added"
+	ChangeManagerRemoved = "manager_removed"
+	ChangeGroupAdopted   = "group_adopted"
+)
+
+// Change is one entry in the history of a group maintained here. Changes made by sync sources are not recorded here; their sync log says what a run changed.
+type Change struct {
+	ID      uuid.UUID `json:"id"`
+	GroupID string    `json:"group_id"`
+	At      time.Time `json:"at"`
+	// Actor is who made the change: a person's identity, "api-token" for a service with a write token, or "system" for what the service did at startup.
+	Actor string `json:"actor"`
+	// OnBehalfOf is the person an admin acted for (X-Act-As); empty otherwise.
+	OnBehalfOf string     `json:"on_behalf_of,omitempty"`
+	Action     string     `json:"action"`
+	Member     string     `json:"member,omitempty"`
+	Relation   string     `json:"relation,omitempty"`
+	ExpiresAt  *time.Time `json:"expires_at,omitempty"`
+	Detail     string     `json:"detail,omitempty"`
 }
 
 // TuplePair is a single group→member relationship used by the sync engine.

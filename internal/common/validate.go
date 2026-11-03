@@ -34,6 +34,17 @@ func ValidateGroupID(id string) error {
 	return nil
 }
 
+// reservedNameRe is a group id in which "*" may stand for any run of characters.
+var reservedNameRe = regexp.MustCompile(`^[a-z0-9*][a-z0-9._*-]{0,127}$`)
+
+// ValidateReservedName checks a glob a source reserves, already normalized. It must name something: a glob of only "*" and separators would reserve every id there is.
+func ValidateReservedName(glob string) error {
+	if !reservedNameRe.MatchString(glob) || strings.Trim(glob, "*.-_") == "" {
+		return fmt.Errorf("%w: reserved name %q must be a group id, with \"*\" for any run of characters, and name at least one letter or digit", ErrInvalidID, glob)
+	}
+	return nil
+}
+
 // ValidateEmail checks an address that is already normalized (NormalizeID): a plain ASCII addr-spec.
 func ValidateEmail(email string) error {
 	if len(email) > maxEmailLength || !emailRe.MatchString(email) {

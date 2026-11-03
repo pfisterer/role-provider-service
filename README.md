@@ -46,7 +46,21 @@ A **Zanzibar-style tuple store** with a small HTTP API:
 
 **Group search** reads the query the way search boxes usually do: words are alternatives (`mannheim karlsruhe`), a quoted phrase is required (`"fak technik"`), `UND`, `AND`, `&` or a leading `+` make terms required (`mannheim UND studierende`), and `*` is a wildcard matched against a whole field or word (`stud*`, `*-ma`). Terms compare case-insensitively with umlauts spelled out, so `beschäftigte` finds `beschaeftigte`, and a `group:` prefix is ignored. Besides the groups themselves, every relation someone holds in a group is offered as an entry of its own (`group:standort-ma#beschaeftigte`, described as the group plus `· Rolle: beschaeftigte`), with the relation's name as a search term. An exact ID comes first, then entries matching more terms.
 
-**A group belongs to one writer**: the source that created it, or the API. A sync that would write members into a group owned by another source fails, naming the owner, and the API refuses to change members of a group a source maintains. Two sources filling the same name would silently merge two meanings; the remedy is a prefix of the source's own (the Keycloak groups are `standort-*`), and combining sources on purpose works by referring to the other source's group as a member.
+**A group belongs to one source**, and its name is shown with it: `wwi23seb (ZWR)`, `standort-ma (keycloak)`. The source's name is searchable like the group's own fields, so `zwr` lists the groups maintained here. A sync that would write members into a group owned by another source fails, naming the owner, and the API refuses to change a group a sync source maintains. Two sources filling the same name would silently merge two meanings; combining sources on purpose works by referring to the other source's group as a member.
+
+**Sources reserve their names.** A source lists globs of the group ids only it may create (`reserved_names`, e.g. `ad-ma-*`); the Keycloak source reserves the groups its mapping names. No other source and not the API may create a group matching one, so a group made by hand today cannot block a location that signs in tomorrow. A reservation that matches somebody else's existing group is refused.
+
+## Groups maintained here
+
+Most groups are not delivered ready-made by any directory: courses, study programmes, offices are kept by hand. They belong to the **local source**, which exists exactly once, is named by `LOCAL_SOURCE_NAME` (e.g. `ZWR`), is never synced, and owns every group created through the API. A local group nests other groups (of any source), people and patterns like every other group, with relations.
+
+- **Managers** maintain a group: a person (`user:<email>`), a group (`group:<id>`) or a relation of one (`group:standort-ma#lehrende`). They change members, managers, display name and description. Managing a group is not being in it: a manager gains none of the group's rights. Creating and deleting groups is for admins (`ADMIN_TOKENS`, e.g. `group:root-admin`), who maintain every local group.
+- **Expiry**: an entry may carry `expires_at`. Until then it counts; afterwards it grants nothing anywhere membership is resolved, but stays listed as expired until somebody removes it. Adding it again sets a new date.
+- **No cycles**: a group cannot end up containing itself, directly or further down.
+- **History**: every change records who made it, for whom an admin acted, and what changed. Changes made by sync sources are in their sync log instead.
+- **Taking over a source**: `ADOPT_SOURCES` names CSV/LDIF sources whose groups and memberships pass to the local source at startup, after which the source is deleted — how a CSV maintained by hand becomes groups maintained in the UI, without a moment in which a group is empty. Groups of no source (created through the API before the local source existed, or left by a deleted source) pass to it as well. Both are no-ops once done.
+
+People maintain their groups in the self-service UI, which reaches this service through its own proxy under `/v1/manage`. That part accepts only an ID token of the UI's identity provider (`OIDC_*`), never an API token, and the rest of `/v1` accepts no ID token: a person can maintain the groups they manage and nothing else — resolving anybody's tokens or reading any group's members stays with the services. An admin may act on behalf of another person with `X-Act-As`, as in the other services, and then sees and does what that person would; the history records both. Writes a page from another origin makes the browser send are refused.
 
 Group search is answered from an in-memory snapshot of the group catalog, reloaded on startup, after every sync and after every group edit, with `GROUP_CACHE_REFRESH_SECONDS` only as a backstop — so a type-ahead never costs a database round-trip. Token resolution queries the store directly (a recursive query on Postgres), so a membership change counts on the next request.
 
@@ -90,9 +104,9 @@ Everything is served under `/v1`, and the service publishes its own OpenAPI
 description at **`GET /swagger.json`** — that spec is the reference, so it cannot
 drift from the implementation the way a hand-written endpoint list does.
 
-Four groups of operations exist: resolving a person's tokens (the query consumers actually run), searching people and groups, editing groups and their members, and managing sync sources (`/v1/sync/sources`) including upload, trigger and log. Next to them, `/v1/admin/health` and `/v1/admin/stats` report liveness and, on Postgres, the number of groups, tuples and sources. Every stable GitHub release carries its `swagger.json` as an asset, so a consumer can generate its client against a pinned version rather than a running instance.
+Five groups of operations exist: resolving a person's tokens (the query consumers actually run), searching people and groups, editing groups and their members, managing sync sources (`/v1/sync/sources`) including upload, trigger and log, and `/v1/manage` for people maintaining groups (see above). Next to them, `/v1/admin/health` and `/v1/admin/stats` report liveness and, on Postgres, the number of groups, tuples and sources. Every stable GitHub release carries its `swagger.json` as an asset, so a consumer can generate its client against a pinned version rather than a running instance. The self-service UI uses the TypeScript client `@dhbw-cloud/role-provider-client`, built with `make npm-package` and published with `make npm-publish` (a `-test.N` version goes to the `next` dist-tag).
 
-Authentication is by bearer token on everything under `/v1` (only `/` and `/swagger.json` are open), with reads and writes separated: a token from `API_TOKENS` may read, a token from `API_WRITE_TOKENS` may also write, and a read token on a write operation gets `403`. The write list has no fallback — left empty, nobody can write — because whoever writes the group graph writes authorization for every consumer. Consumers that only resolve tokens should be given a read token.
+Authentication is by bearer token on everything under `/v1` (only `/` and `/swagger.json` are open; `/v1/manage` takes an ID token instead), with reads and writes separated: a token from `API_TOKENS` may read, a token from `API_WRITE_TOKENS` may also write, and a read token on a write operation gets `403`. The write list has no fallback — left empty, nobody can write — because whoever writes the group graph writes authorization for every consumer. Consumers that only resolve tokens should be given a read token.
 
 ## Running it locally
 
@@ -127,6 +141,11 @@ With `DB_TYPE=memory` and `DB_ADD_MOCK_DATA=true` the service starts with a smal
 | `KEYCLOAK_CLIENT_ID` / `KEYCLOAK_CLIENT_SECRET` | — | Service account with `realm-management/view-users` |
 | `KEYCLOAK_MAPPING` | — | JSON rules turning attribute values into groups (see Import formats) |
 | `KEYCLOAK_SYNC_SCHEDULE` | `*/15 * * * *` | Cron schedule of the full read |
+| `LOCAL_SOURCE_NAME` | `local` | Name of the local source, shown next to its groups (e.g. `ZWR`) |
+| `ADOPT_SOURCES` | *(empty)* | CSV/LDIF sources whose groups pass to the local source at startup; each is deleted afterwards |
+| `ADMIN_TOKENS` | *(empty)* | Tokens that maintain every local group, create and delete groups, and may act on behalf of another person (e.g. `group:root-admin`) |
+| `OIDC_ISSUER_URL` / `OIDC_CLIENT_ID` | *(empty)* | Identity provider and audience of the ID tokens `/v1/manage` accepts; empty leaves `/v1/manage` out |
+| `OIDC_JWKS_URL` | *(empty)* | The provider's key set; set, nothing is fetched at startup |
 | `MAX_RESPONSE_LIMIT` | `50` | Cap on results per group or user search |
 | `SERVICE_TIMEOUT_SECONDS` | `30` | Per-request timeout |
 

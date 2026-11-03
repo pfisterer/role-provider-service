@@ -7,6 +7,10 @@ GO_MOD       := go.mod
 
 SWAGGER_JSON := $(DOC_DIR)/swagger.json
 EMBED_FILE   := $(DOC_DIR)/embedded.go
+OPENAPI_JSON := $(DOC_DIR)/openapi3.json
+CLIENT_DIR   := $(DOC_DIR)/client-typescript
+CLIENT_PKG_DIR := ./client-npm
+NPM_PKG_NAME := @dhbw-cloud/role-provider-client
 
 # Docker image details
 DOCKER_REPO      ?= ghcr.io/pfisterer/$(PROJECT_NAME)
@@ -16,7 +20,8 @@ DOCKER_PLATFORMS ?= linux/amd64,linux/arm64
 .DEFAULT_GOAL := all
 
 .PHONY: publish all build clean doc check-swag generate-docs run dev test tidy lint help \
-        docker-build docker-run docker-multi-arch-build helm-update bump version-check
+        docker-build docker-run docker-multi-arch-build helm-update bump version-check \
+        install-npm client npm-package npm-pack npm-publish
 
 all: generate-docs build
 
@@ -30,7 +35,7 @@ check-swag:
 generate-docs: check-swag
 	@echo "📚 Generating swagger.json..."
 	@mkdir -p $(DOC_DIR)
-	@set -e; swag init -g doc.go --dir $(SRC_DIR),./internal/webserver,./internal/common -o $(DOC_DIR) --outputTypes json
+	@set -e; swag init -g doc.go --dir $(SRC_DIR),./internal/webserver,./internal/common,./internal/groupmgmt -o $(DOC_DIR) --outputTypes json
 	@echo "🧩 Copying VERSION file to $(DOC_DIR)..."
 	@cp VERSION $(DOC_DIR)/VERSION
 	@echo "🧩 Writing $(EMBED_FILE)..."
@@ -48,6 +53,67 @@ generate-docs: check-swag
 
 # Alias
 doc: generate-docs
+
+# ── TypeScript client ─────────────────────────────────────────────────────────
+# The self-service UI maintains groups through /v1/manage and calls it only through this generated client, taken as an npm package at build time: an operation the deployed API lacks is then a build error there, not a silent no-op in the browser. Same tooling and layout as openstack-management-api's client.
+
+install-npm:
+	@npm install --silent
+
+client: generate-docs install-npm
+	@echo "🔁 Converting Swagger 2 → OpenAPI 3..."
+	@npx swagger2openapi $(SWAGGER_JSON) --outfile $(OPENAPI_JSON) --yaml=false --patch --warnOnly
+	@echo "📦 Generating TypeScript client..."
+	@rm -rf $(CLIENT_DIR) && mkdir -p $(CLIENT_DIR)
+	@npx openapi-ts -i "file://$(abspath $(OPENAPI_JSON))" -o "$(CLIENT_DIR)" -c @hey-api/client-fetch
+	@rm -f $(OPENAPI_JSON)
+	@echo "✅ TS client generated in $(CLIENT_DIR)"
+
+npm-package: client
+	@echo "📦 Assembling $(NPM_PKG_NAME)..."
+	@rm -rf $(CLIENT_PKG_DIR)
+	@mkdir -p $(CLIENT_PKG_DIR)/src
+	@cp -R $(CLIENT_DIR)/. $(CLIENT_PKG_DIR)/src/
+	@# The generated index.ts exports every operation and type, but not the client instance the consumer configures.
+	@printf '%s\n' \
+		"export * from './index';" \
+		"export { client } from './client.gen';" \
+		> $(CLIENT_PKG_DIR)/src/entry.ts
+	@VERSION=$$(cat VERSION | tr -d '\n'); printf '%s\n' \
+		'{' \
+		'  "name": "$(NPM_PKG_NAME)",' \
+		"  \"version\": \"$$VERSION\"," \
+		'  "description": "Generated TypeScript client for the DHBW Cloud $(PROJECT_NAME).",' \
+		'  "license": "Apache-2.0",' \
+		'  "type": "module",' \
+		'  "exports": { ".": { "types": "./dist/entry.d.ts", "default": "./dist/index.mjs" } },' \
+		'  "types": "./dist/entry.d.ts",' \
+		'  "files": ["dist"],' \
+		'  "publishConfig": { "access": "public" },' \
+		'  "repository": { "type": "git", "url": "git+https://github.com/pfisterer/$(PROJECT_NAME).git" }' \
+		'}' \
+		> $(CLIENT_PKG_DIR)/package.json
+	@# Bundled into one .mjs: the generated sources import each other without file extensions, which bundlers tolerate and plain Node does not.
+	@npx esbuild $(CLIENT_PKG_DIR)/src/entry.ts --bundle --format=esm --outfile=$(CLIENT_PKG_DIR)/dist/index.mjs
+	@npx tsc $(CLIENT_PKG_DIR)/src/entry.ts --declaration --emitDeclarationOnly \
+		--outDir $(CLIENT_PKG_DIR)/dist --module esnext --moduleResolution bundler \
+		--target es2022 --skipLibCheck
+	@echo "✅ Package assembled in $(CLIENT_PKG_DIR)"
+
+# The tarball a publish would upload — for trying the package in the UI without publishing.
+npm-pack: npm-package
+	@cd $(CLIENT_PKG_DIR) && npm pack
+
+# A prerelease goes to the `next` dist-tag, so a plain `npm install` never hands out a -test.N build. Needs `npm login` once.
+npm-publish: npm-package
+	@npm whoami >/dev/null 2>&1 || npm login
+	@VERSION=$$(cat VERSION | tr -d '\n'); \
+	case "$$VERSION" in \
+		*-*) TAG=next ;; \
+		*)   TAG=latest ;; \
+	esac; \
+	echo "📤 Publishing $(NPM_PKG_NAME)@$$VERSION (dist-tag: $$TAG)"; \
+	cd $(CLIENT_PKG_DIR) && npm publish --tag "$$TAG"
 
 # ── Build ─────────────────────────────────────────────────────────────────────
 

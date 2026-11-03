@@ -31,7 +31,7 @@ func storesUnderTest(t *testing.T) map[string]Store {
 		t.Fatalf("postgres: %v", err)
 	}
 	// Each test starts from an empty graph.
-	for _, table := range []string{"tuples", "groups", "sync_logs", "sources"} {
+	for _, table := range []string{"tuples", "groups", "sync_logs", "sources", "group_managers", "group_changes"} {
 		if err := pg.DB().Exec("DELETE FROM " + table).Error; err != nil {
 			t.Fatalf("clean %s: %v", table, err)
 		}
@@ -50,13 +50,13 @@ func storesUnderTest(t *testing.T) map[string]Store {
 func seedCourse(t *testing.T, s Store) {
 	t.Helper()
 	ctx := context.Background()
-	must(t, s.AddMember(ctx, "wwi23seb", "dozent", "user", "anna@example", nil))
-	must(t, s.AddMember(ctx, "wwi23seb-kurs", "member", "user", "ben@example", nil))
-	must(t, s.AddMember(ctx, "wwi23seb-kurs", "", "user", "carla@example", nil))
-	must(t, s.AddMember(ctx, "wwi23seb", "studierende", "group", "wwi23seb-kurs", nil))
-	must(t, s.AddMember(ctx, "wwi23seb", "member", "user", "dora@example", nil))
-	must(t, s.AddMember(ctx, "fakultaet-wi", "member", "group", "wwi23seb", nil))
-	must(t, s.AddMember(ctx, "tutoren", "tutor", "pattern", "*@tutor.example", nil))
+	must(t, s.AddMember(ctx, "wwi23seb", "dozent", "user", "anna@example", nil, nil))
+	must(t, s.AddMember(ctx, "wwi23seb-kurs", "member", "user", "ben@example", nil, nil))
+	must(t, s.AddMember(ctx, "wwi23seb-kurs", "", "user", "carla@example", nil, nil))
+	must(t, s.AddMember(ctx, "wwi23seb", "studierende", "group", "wwi23seb-kurs", nil, nil))
+	must(t, s.AddMember(ctx, "wwi23seb", "member", "user", "dora@example", nil, nil))
+	must(t, s.AddMember(ctx, "fakultaet-wi", "member", "group", "wwi23seb", nil, nil))
+	must(t, s.AddMember(ctx, "tutoren", "tutor", "pattern", "*@tutor.example", nil, nil))
 }
 
 func sorted(in []string) []string {
@@ -132,8 +132,8 @@ func TestRelations_RemoveOneRelation(t *testing.T) {
 	for name, s := range storesUnderTest(t) {
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
-			must(t, s.AddMember(ctx, "g", "dozent", "user", "anna@example", nil))
-			must(t, s.AddMember(ctx, "g", "member", "user", "anna@example", nil))
+			must(t, s.AddMember(ctx, "g", "dozent", "user", "anna@example", nil, nil))
+			must(t, s.AddMember(ctx, "g", "member", "user", "anna@example", nil, nil))
 			must(t, s.RemoveMember(ctx, "g", "dozent", "user", "anna@example"))
 			got, err := s.GetUserTokens(ctx, "anna@example")
 			must(t, err)

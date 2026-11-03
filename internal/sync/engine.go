@@ -3,9 +3,12 @@ package sync
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -56,6 +59,11 @@ func (e *Engine) RunSync(ctx context.Context, sourceID uuid.UUID, content []byte
 	src, err := e.store.GetSource(ctx, sourceID)
 	if err != nil {
 		return fmt.Errorf("source %s not found: %w", sourceID, err)
+	}
+
+	if src.Type == common.SourceTypeLocal {
+		// Refused before a log entry exists: there was no run, so there is nothing to log.
+		return &ImportError{fmt.Errorf("source %q is maintained through the group API and the self-service UI; it has nothing to sync", src.Name)}
 	}
 
 	logEntry := &common.SyncLog{
@@ -151,30 +159,44 @@ func groupIDs(tuples []common.TuplePair) []string {
 }
 
 // CheckOwnership refuses a source writing members into a group that belongs to
-// someone else — another source, or the API. A group belongs to exactly one
-// writer: two sources filling the same name silently merge two meanings (the
-// CSV's staff tree "dhbw-ma" would have gained every student), and when one of
-// them drops a member the other still lists, the member vanishes anyway.
-// Referring to another source's group as a member is always allowed; that is
-// how two sources are combined on purpose.
+// someone else — another source, the local one included — or whose name another
+// source has reserved. A group belongs to exactly one writer: two sources
+// filling the same name silently merge two meanings (the CSV's staff tree
+// "dhbw-ma" would have gained every student), and when one of them drops a
+// member the other still lists, the member vanishes anyway. Referring to
+// another source's group as a member is always allowed; that is how two
+// sources are combined on purpose.
 func CheckOwnership(ctx context.Context, store storage.Store, sourceID uuid.UUID, groups []string) error {
 	owners, err := store.GroupOwners(ctx, groups)
 	if err != nil {
 		return fmt.Errorf("check group ownership: %w", err)
 	}
+	sources, err := store.ListSources(ctx)
+	if err != nil {
+		return fmt.Errorf("check reserved names: %w", err)
+	}
+	names := map[uuid.UUID]string{}
+	for _, src := range sources {
+		names[src.ID] = src.Name
+	}
 	for _, id := range groups {
-		owner, exists := owners[id]
-		if !exists || (owner != nil && *owner == sourceID) {
-			continue
+		if owner, exists := owners[id]; exists && (owner == nil || *owner != sourceID) {
+			who := "no source"
+			if owner != nil {
+				who = fmt.Sprintf("source %q", names[*owner])
+			}
+			return &ImportError{fmt.Errorf("group %q belongs to %s; give this source's groups names of their own, or refer to that group as a member", id, who)}
 		}
-		who := "the API"
-		if owner != nil {
-			who = "source " + owner.String()
-			if src, err := store.GetSource(ctx, *owner); err == nil && src != nil {
-				who = fmt.Sprintf("source %q", src.Name)
+		for _, src := range sources {
+			if src.ID == sourceID {
+				continue
+			}
+			for _, glob := range src.ReservedNames {
+				if common.MatchGlob(glob, id) {
+					return &ImportError{fmt.Errorf("group %q is reserved for source %q (%s); give this source's groups names of their own", id, src.Name, glob)}
+				}
 			}
 		}
-		return &ImportError{fmt.Errorf("group %q belongs to %s; give this source's groups a prefix of their own, or refer to that group as a member", id, who)}
 	}
 	return nil
 }
@@ -234,4 +256,52 @@ func normalizeIDs(tuples []common.TuplePair, descriptions map[string]string) ([]
 		normalized[common.NormalizeID(id)] = desc
 	}
 	return tuples, normalized
+}
+
+// ErrReservationConflict marks reserved names that match groups somebody else already has.
+var ErrReservationConflict = errors.New("reservation conflict")
+
+// NormalizeReservedNames puts the globs a source reserves into their stored spelling and checks each.
+func NormalizeReservedNames(globs []string) ([]string, error) {
+	out := []string{}
+	for _, g := range globs {
+		g = common.NormalizeID(strings.TrimPrefix(strings.TrimSpace(g), common.GroupPrefix))
+		if g == "" {
+			continue
+		}
+		if err := common.ValidateReservedName(g); err != nil {
+			return nil, err
+		}
+		if !slices.Contains(out, g) {
+			out = append(out, g)
+		}
+	}
+	return out, nil
+}
+
+// CheckReservation refuses reserved names that match a group another source already owns: the reservation would claim a name that is somebody else's, and the next sync of this source would fail on it.
+func CheckReservation(ctx context.Context, store storage.Store, sourceID uuid.UUID, globs []string) error {
+	if len(globs) == 0 {
+		return nil
+	}
+	groups, err := store.ListGroups(ctx, "", nil, 0)
+	if err != nil {
+		return err
+	}
+	var taken []string
+	for _, g := range groups {
+		if g.SourceID != nil && *g.SourceID == sourceID {
+			continue
+		}
+		if slices.ContainsFunc(globs, func(glob string) bool { return common.MatchGlob(glob, g.ID) }) {
+			taken = append(taken, g.ID)
+		}
+	}
+	if len(taken) > 0 {
+		if len(taken) > 5 {
+			taken = append(taken[:5], "…")
+		}
+		return fmt.Errorf("%w: the reserved names match groups of other sources: %s", ErrReservationConflict, strings.Join(taken, ", "))
+	}
+	return nil
 }

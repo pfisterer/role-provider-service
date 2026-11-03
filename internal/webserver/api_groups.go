@@ -3,6 +3,7 @@ package webserver
 import (
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/pfisterer/role-provider-service/internal/groupmgmt"
@@ -79,12 +80,14 @@ type createGroupRequest struct {
 	ID          string `json:"id" binding:"required"`
 	DisplayName string `json:"display_name"`
 	Description string `json:"description"`
+	// Managers may maintain the group: user:<email>, group:<id> or group:<id>#<relation>.
+	Managers []string `json:"managers,omitempty"`
 }
 
 // createGroup godoc
 //
 //	@Summary		Create group
-//	@Description	Creates a new group with the given ID. The token is derived as "group:<id>".
+//	@Description	Creates a new group of the local source with the given ID. The token is derived as "group:<id>". An id another source reserves is refused (409).
 //	@Tags			groups
 //	@Accept			json
 //	@Produce		json
@@ -103,7 +106,7 @@ func createGroup(svc *groupmgmt.Service) gin.HandlerFunc {
 		if !bindJSON(c, &req) {
 			return
 		}
-		g, err := svc.CreateGroup(c.Request.Context(), req.ID, req.DisplayName, req.Description)
+		g, err := svc.CreateGroup(c.Request.Context(), groupmgmt.APITokenCaller(), req.ID, req.DisplayName, req.Description, req.Managers)
 		if err != nil {
 			respondError(c, err)
 			return
@@ -144,7 +147,7 @@ type updateGroupRequest struct {
 // updateGroup godoc
 //
 //	@Summary		Update group
-//	@Description	Updates the display name and/or description of a group.
+//	@Description	Updates the display name and description of a group of the local source. A group a sync source maintains is refused (409).
 //	@Tags			groups
 //	@Accept			json
 //	@Produce		json
@@ -155,6 +158,7 @@ type updateGroupRequest struct {
 //	@Failure		400		{object}	map[string]any	"Bad request"
 //	@Failure		401		{object}	map[string]any	"Unauthorized"
 //	@Failure		404		{object}	map[string]any	"Not found"
+//	@Failure		409		{object}	map[string]any	"Group is maintained by a sync source"
 //	@Failure		500		{object}	map[string]any	"Internal server error"
 //	@ID				updateGroup
 //	@Router			/v1/groups/{token} [patch]
@@ -164,7 +168,7 @@ func updateGroup(svc *groupmgmt.Service) gin.HandlerFunc {
 		if !bindJSON(c, &req) {
 			return
 		}
-		g, err := svc.UpdateGroup(c.Request.Context(), c.Param("token"), req.DisplayName, req.Description)
+		g, err := svc.UpdateGroup(c.Request.Context(), groupmgmt.APITokenCaller(), c.Param("token"), req.DisplayName, req.Description)
 		if err != nil {
 			respondError(c, err)
 			return
@@ -176,7 +180,7 @@ func updateGroup(svc *groupmgmt.Service) gin.HandlerFunc {
 // deleteGroup godoc
 //
 //	@Summary		Delete group
-//	@Description	Permanently deletes a group created through the API, together with its members and its memberships in other groups, so nobody keeps group:<id> afterwards. A group maintained by a sync source cannot be deleted here (409): remove it from the source and sync again.
+//	@Description	Permanently deletes a group of the local source, together with its members and its memberships in other groups, so nobody keeps group:<id> afterwards. A group maintained by a sync source cannot be deleted here (409): remove it from the source and sync again.
 //	@Tags			groups
 //	@Security		Bearer
 //	@Param			token	path	string	true	"Group token"
@@ -189,7 +193,7 @@ func updateGroup(svc *groupmgmt.Service) gin.HandlerFunc {
 //	@Router			/v1/groups/{token} [delete]
 func deleteGroup(svc *groupmgmt.Service) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if err := svc.DeleteGroup(c.Request.Context(), c.Param("token")); err != nil {
+		if err := svc.DeleteGroup(c.Request.Context(), groupmgmt.APITokenCaller(), c.Param("token")); err != nil {
 			respondError(c, err)
 			return
 		}
@@ -230,12 +234,14 @@ type addMemberRequest struct {
 	Member string `json:"member" binding:"required"`
 	// Relation the member gets in the group; empty means "member".
 	Relation string `json:"relation,omitempty"`
+	// ExpiresAt, if set, is when the entry stops counting (RFC 3339, in the future). Adding an entry that exists sets its expiry.
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 }
 
 // addMember godoc
 //
 //	@Summary		Add member to group
-//	@Description	Adds a user or group token to the group with a relation (default "member"). A group token as member means all of that group's members hold the relation.
+//	@Description	Adds a user, group or pattern token to a group of the local source with a relation (default "member"), optionally until expires_at. A group token as member means all of that group's members hold the relation; a group that would end up containing itself is refused (409).
 //	@Tags			groups
 //	@Accept			json
 //	@Security		Bearer
@@ -245,6 +251,7 @@ type addMemberRequest struct {
 //	@Failure		400		{object}	map[string]any	"Bad request"
 //	@Failure		401		{object}	map[string]any	"Unauthorized"
 //	@Failure		404		{object}	map[string]any	"Group not found"
+//	@Failure		409		{object}	map[string]any	"Group is maintained by a sync source, or the member would make a cycle"
 //	@Failure		500		{object}	map[string]any	"Internal server error"
 //	@ID				addGroupMember
 //	@Router			/v1/groups/{token}/members [post]
@@ -254,7 +261,7 @@ func addMember(svc *groupmgmt.Service) gin.HandlerFunc {
 		if !bindJSON(c, &req) {
 			return
 		}
-		if err := svc.AddMember(c.Request.Context(), c.Param("token"), req.Relation, req.Member); err != nil {
+		if err := svc.AddMember(c.Request.Context(), groupmgmt.APITokenCaller(), c.Param("token"), req.Relation, req.Member, req.ExpiresAt); err != nil {
 			respondError(c, err)
 			return
 		}
@@ -284,7 +291,7 @@ func removeMember(svc *groupmgmt.Service) gin.HandlerFunc {
 		if len(member) > 0 && member[0] == '/' {
 			member = member[1:]
 		}
-		if err := svc.RemoveMember(c.Request.Context(), c.Param("token"), c.Query("relation"), member); err != nil {
+		if err := svc.RemoveMember(c.Request.Context(), groupmgmt.APITokenCaller(), c.Param("token"), c.Query("relation"), member); err != nil {
 			respondError(c, err)
 			return
 		}

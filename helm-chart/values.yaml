@@ -59,6 +59,28 @@ roleProviderService:
     # see the README. Every relation named under roles must be in groupRelations.
     mapping: {}
 
+  # Name of the source that holds the groups maintained through the API and the
+  # self-service UI, shown next to them ("wwi23seb (ZWR)").
+  localSourceName: "local"
+
+  # CSV/LDIF sources whose groups and memberships pass to the local source at
+  # startup; each is deleted afterwards. Once done there is nothing left to
+  # adopt, so an entry can stay until it is removed.
+  adoptSources: []
+
+  # Tokens that maintain every local group, create and delete groups, and may act
+  # on behalf of another person (X-Act-As), e.g. ["group:root-admin"].
+  adminTokens: []
+
+  # Identity provider of the self-service UI. With issuerUrl set, people signed
+  # in there maintain the groups they manage under /v1/manage, reached through
+  # the UI's proxy; empty leaves /v1/manage out. clientId is the audience of the
+  # ID token the proxy forwards; jwksUrl spares a discovery request at startup.
+  oidc:
+    issuerUrl: ""
+    clientId: ""
+    jwksUrl: ""
+
 ingress:
   enabled: true
   # Empty className -> field omitted -> cluster default IngressClass (Traefik on
