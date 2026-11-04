@@ -26,11 +26,12 @@ type GroupPage struct {
 	Total int            `json:"total"`
 }
 
-// BrowseQuery says what to list: the groups in Parent; or those matching Query, optionally of one Source; or the top of a Source's tree — its groups no other group of that source contains.
+// BrowseQuery says what to list: the way down to PathTo; or the groups in Parent; or those matching Query, optionally of one Source; or the top of a Source's tree — its groups no other group of that source contains.
 type BrowseQuery struct {
 	Query  string
 	Source string
 	Parent string
+	PathTo string
 	Limit  int
 	Offset int
 }
@@ -68,6 +69,15 @@ func (s *Service) Browse(ctx context.Context, caller Caller, q BrowseQuery) (*Gr
 
 	var out []common.Group
 	switch {
+	case q.PathTo != "":
+		target := strings.TrimPrefix(q.PathTo, common.GroupPrefix)
+		g, ok := byID[target]
+		if !ok {
+			return nil, fmt.Errorf("%w: group '%s'", ErrNotFound, q.PathTo)
+		}
+		for _, id := range pathDown(g, byID, parents) {
+			out = append(out, byID[id])
+		}
 	case q.Parent != "":
 		parent := strings.TrimPrefix(q.Parent, common.GroupPrefix)
 		if _, ok := byID[parent]; !ok {
@@ -108,6 +118,42 @@ func (s *Service) Browse(ctx context.Context, caller Caller, q BrowseQuery) (*Gr
 		}
 	}
 	return s.page(ctx, out, children, q)
+}
+
+// pathDown is the shortest way from the top of a group's source tree down to the group, as the tree shows it: through groups of the same source, ending with the group itself.
+func pathDown(g common.Group, byID map[string]common.Group, parents map[string][]string) []string {
+	sameSource := func(id string) []string {
+		var out []string
+		for _, p := range parents[id] {
+			if byID[p].SourceName == g.SourceName {
+				out = append(out, p)
+			}
+		}
+		slices.Sort(out)
+		return out
+	}
+	// Breadth-first upwards: the first group without a parent of its source is the top.
+	next := map[string]string{g.ID: ""}
+	queue := []string{g.ID}
+	for len(queue) > 0 {
+		id := queue[0]
+		queue = queue[1:]
+		ups := sameSource(id)
+		if len(ups) == 0 {
+			path := []string{}
+			for at := id; at != ""; at = next[at] {
+				path = append(path, at)
+			}
+			return path
+		}
+		for _, p := range ups {
+			if _, seen := next[p]; !seen {
+				next[p] = id
+				queue = append(queue, p)
+			}
+		}
+	}
+	return []string{g.ID}
 }
 
 // page cuts one page out of the groups and says of each whether the caller may change it — every local group listed is, since admins maintain all of them and everybody else is listed only theirs — and how many groups it holds; children nil means they are counted here.

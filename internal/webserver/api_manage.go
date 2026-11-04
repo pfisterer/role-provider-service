@@ -114,13 +114,14 @@ func manageSearchPrincipals(svc *groupmgmt.Service, maxLimit int) gin.HandlerFun
 // manageListGroups godoc
 //
 //	@Summary		Groups to browse
-//	@Description	For an admin, every source: the groups entered in parent; else those matching q, optionally of one source; else the top of a source's tree (its groups no other group of that source contains); with none of these the local groups. Everybody else gets the local groups they maintain, narrowed by q. Each group says whether the caller may change it (editable: local groups only) and how many groups it holds.
+//	@Description	For an admin, every source: with path_to, the way from the top of that group's source tree down to it (top first, the group last, through groups of its source); the groups entered in parent; else those matching q, optionally of one source; else the top of a source's tree (its groups no other group of that source contains); with none of these the local groups. Everybody else gets the local groups they maintain, narrowed by q. Each group says whether the caller may change it (editable: local groups only) and how many groups it holds.
 //	@Tags			manage
 //	@Produce		json
 //	@Security		Bearer
 //	@Param			q		query		string	false	"Search query"
 //	@Param			source	query		string	false	"Source name (admins)"
 //	@Param			parent	query		string	false	"Group whose groups to list (admins)"
+//	@Param			path_to	query		string	false	"Group to find in the tree: the groups from the top of its source down to it (admins)"
 //	@Param			limit	query		int		false	"Page size"	default(200)
 //	@Param			offset	query		int		false	"Entries to skip"
 //	@Success		200		{object}	groupmgmt.GroupPage
@@ -130,7 +131,7 @@ func manageSearchPrincipals(svc *groupmgmt.Service, maxLimit int) gin.HandlerFun
 //	@Router			/v1/manage/groups [get]
 func manageListGroups(svc *groupmgmt.Service) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		q := groupmgmt.BrowseQuery{Query: c.Query("q"), Source: c.Query("source"), Parent: c.Query("parent"), Limit: 200}
+		q := groupmgmt.BrowseQuery{Query: c.Query("q"), Source: c.Query("source"), Parent: c.Query("parent"), PathTo: c.Query("path_to"), Limit: 200}
 		if n, err := strconv.Atoi(c.Query("limit")); err == nil && n > 0 && n <= 1000 {
 			q.Limit = n
 		}

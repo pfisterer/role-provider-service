@@ -73,6 +73,16 @@ func TestBrowseEverySource(t *testing.T) {
 		t.Errorf("second page %+v", paged)
 	}
 
+	// The way down to a course: the top of its source first, through groups of that source, not through the local group it is also entered in.
+	way, err := svc.Browse(ctx, admin, BrowseQuery{PathTo: "group:dualis-ma-tmb24"})
+	must(t, err)
+	if got := ids(way); len(got) != 3 || got[0] != "dualis-fakultaet-technik" || got[1] != "dualis-orga-ma-t-mb" || got[2] != "dualis-ma-tmb24" {
+		t.Errorf("way to the course %v", got)
+	}
+	if way, err := svc.Browse(ctx, admin, BrowseQuery{PathTo: "kurs-ma"}); err != nil || len(way.Items) != 1 {
+		t.Errorf("way to a top group %+v %v", way, err)
+	}
+
 	// Read, not write: an admin sees a Dualis group, its people and history, and cannot change it.
 	d, err := svc.Detail(ctx, admin, "group:dualis-ma-tmb24")
 	must(t, err)
