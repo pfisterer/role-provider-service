@@ -93,6 +93,13 @@ spec:
                   name: {{ $secretName }}
                   key: api-write-tokens
                   optional: true
+            # Upload tokens: each may only upload to its one sync source ("<source>=<token>,…"). Optional key.
+            - name: SOURCE_UPLOAD_TOKENS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: source-upload-tokens
+                  optional: true
 
             # Relations a group can carry besides "member" (e.g. dozent,studierende).
             - name: GROUP_RELATIONS

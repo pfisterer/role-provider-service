@@ -21,15 +21,17 @@ import (
 
 // SetupConfig holds all dependencies needed to wire the HTTP router.
 type SetupConfig struct {
-	DevMode          bool
-	Log              *zap.SugaredLogger
-	APITokens        []string
-	APIWriteTokens   []string
-	GroupSvc         *groupmgmt.Service
-	Store            storage.Store
-	SyncEngine       *syncp.Engine
-	Scheduler        *syncp.Scheduler
-	MaxResponseLimit int // global upper bound on list endpoints; 0 → default of 50
+	DevMode        bool
+	Log            *zap.SugaredLogger
+	APITokens      []string
+	APIWriteTokens []string
+	// SourceUploadTokens may each upload to one sync source and do nothing else.
+	SourceUploadTokens []SourceUploadToken
+	GroupSvc           *groupmgmt.Service
+	Store              storage.Store
+	SyncEngine         *syncp.Engine
+	Scheduler          *syncp.Scheduler
+	MaxResponseLimit   int // global upper bound on list endpoints; 0 → default of 50
 	// CORSAllowedOrigins are the browser origins allowed to call /v1
 	// cross-origin. Empty means none — see ginweb.EnableCORS.
 	CORSAllowedOrigins []string
@@ -103,7 +105,7 @@ func SetupRouter(cfg SetupConfig) (*gin.Engine, error) {
 	apiGroup.Use(limitRequestBody())
 
 	// Authentication.
-	apiGroup.Use(BearerAuthMiddleware(cfg.APITokens, cfg.APIWriteTokens, cfg.Log))
+	apiGroup.Use(BearerAuthMiddleware(cfg.APITokens, cfg.APIWriteTokens, cfg.SourceUploadTokens, cfg.Log))
 	// Response bodies here are group memberships: names and mail addresses of
 	// real people. That belongs in a local debug session, never in the cluster's
 	// central log storage — so this middleware exists only in dev mode.
@@ -117,7 +119,7 @@ func SetupRouter(cfg SetupConfig) (*gin.Engine, error) {
 	write := requireWriteToken(cfg.Log)
 	registerGroupRoutes(apiGroup, cfg.GroupSvc, cfg.MaxResponseLimit, write)
 	registerUserRoutes(apiGroup, cfg.GroupSvc, cfg.Store, cfg.MaxResponseLimit)
-	registerSyncRoutes(apiGroup, cfg.Store, cfg.SyncEngine, cfg.Scheduler, cfg.GroupSvc, write)
+	registerSyncRoutes(apiGroup, cfg.Store, cfg.SyncEngine, cfg.Scheduler, cfg.GroupSvc, write, requireWriteOrOwnSource(cfg.Store, cfg.Log))
 	registerAdminRoutes(apiGroup, cfg.Store)
 
 	return router, nil

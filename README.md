@@ -106,7 +106,7 @@ drift from the implementation the way a hand-written endpoint list does.
 
 Five groups of operations exist: resolving a person's tokens (the query consumers actually run), searching people and groups, editing groups and their members, managing sync sources (`/v1/sync/sources`) including upload, trigger and log, and `/v1/manage` for people maintaining groups (see above). Next to them, `/v1/admin/health` and `/v1/admin/stats` report liveness and, on Postgres, the number of groups, tuples and sources. Every stable GitHub release carries its `swagger.json` as an asset, so a consumer can generate its client against a pinned version rather than a running instance. The self-service UI uses the TypeScript client `@dhbw-cloud/role-provider-client`, built with `make npm-package` and published with `make npm-publish` (a `-test.N` version goes to the `next` dist-tag).
 
-Authentication is by bearer token on everything under `/v1` (only `/` and `/swagger.json` are open; `/v1/manage` takes an ID token instead), with reads and writes separated: a token from `API_TOKENS` may read, a token from `API_WRITE_TOKENS` may also write, and a read token on a write operation gets `403`. The write list has no fallback — left empty, nobody can write — because whoever writes the group graph writes authorization for every consumer. Consumers that only resolve tokens should be given a read token.
+Authentication is by bearer token on everything under `/v1` (only `/` and `/swagger.json` are open; `/v1/manage` takes an ID token instead), with reads and writes separated: a token from `API_TOKENS` may read, a token from `API_WRITE_TOKENS` may also write, and a read token on a write operation gets `403`. The write list has no fallback — left empty, nobody can write — because whoever writes the group graph writes authorization for every consumer. Consumers that only resolve tokens should be given a read token. A sync server outside the cluster gets an upload token instead (`SOURCE_UPLOAD_TOKENS`, `<source>=<token>`): it may upload to that one source and nothing else, not even read, so losing it neither reveals the graph nor reaches beyond the groups that source owns.
 
 ## Running it locally
 
@@ -131,6 +131,7 @@ With `DB_TYPE=memory` and `DB_ADD_MOCK_DATA=true` the service starts with a smal
 | `API_BIND` | `:8085` | Listen address |
 | `API_TOKENS` | — (required) | Comma-separated bearer tokens allowed to read |
 | `API_WRITE_TOKENS` | — | Comma-separated bearer tokens allowed to write; empty means nobody can write |
+| `SOURCE_UPLOAD_TOKENS` | — | Comma-separated `<source>=<token>` pairs; each token may only upload to the source of that name |
 | `CORS_ALLOWED_ORIGINS` | — | Exact origins allowed for browser access; empty allows none |
 | `DB_TYPE` | `memory` | `memory` \| `postgres` |
 | `DB_CONNECTION_STRING` | local Postgres DSN | Used when `DB_TYPE=postgres` |

@@ -33,6 +33,10 @@ roleProviderService:
     # Write tokens (comma-separated). Required for creating/changing groups,
     # memberships and sync sources. Empty = nobody may write via the API.
     writeTokens: ""
+    # Upload tokens, "<source>=<token>" comma-separated: each may upload to the
+    # one sync source it names and do nothing else, not even read. For sync
+    # servers outside the cluster that should not hold a write token.
+    sourceUploadTokens: ""
     # Browser origins allowed to call /v1 cross-origin. This API is consumed by
     # other services with an API token, so the empty default (no cross-origin
     # access) is the normal setting.

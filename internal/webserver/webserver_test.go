@@ -23,8 +23,9 @@ import (
 )
 
 const (
-	readToken  = "read-token"
-	writeToken = "write-token"
+	readToken   = "read-token"
+	writeToken  = "write-token"
+	uploadToken = "upload-token-dualis"
 )
 
 type testServer struct {
@@ -41,15 +42,16 @@ func newTestServer(t *testing.T, store storage.Store, trustedProxies []string) t
 	engine := syncp.NewEngine(store, relations, log)
 	scheduler := syncp.NewScheduler(engine, store, log)
 	router, err := SetupRouter(SetupConfig{
-		Log:              log,
-		APITokens:        []string{readToken},
-		APIWriteTokens:   []string{writeToken},
-		GroupSvc:         groupmgmt.NewService(store, nil, relations, uuid.New(), 5*time.Second, log),
-		Store:            store,
-		SyncEngine:       engine,
-		Scheduler:        scheduler,
-		MaxResponseLimit: 50,
-		TrustedProxies:   trustedProxies,
+		Log:                log,
+		APITokens:          []string{readToken},
+		APIWriteTokens:     []string{writeToken},
+		SourceUploadTokens: []SourceUploadToken{{Source: "dualis", Token: uploadToken}},
+		GroupSvc:           groupmgmt.NewService(store, nil, relations, uuid.New(), 5*time.Second, log),
+		Store:              store,
+		SyncEngine:         engine,
+		Scheduler:          scheduler,
+		MaxResponseLimit:   50,
+		TrustedProxies:     trustedProxies,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -229,5 +231,54 @@ func TestDeleteSourceGroupIsConflict(t *testing.T) {
 	s.do(http.MethodPost, "/v1/groups", writeToken, "application/json", []byte(`{"id":"manual"}`))
 	if w := s.do(http.MethodDelete, "/v1/groups/group:manual", writeToken, "", nil); w.Code != http.StatusNoContent {
 		t.Errorf("delete an API group: %d %s", w.Code, w.Body)
+	}
+}
+
+// An upload token replaces its own source and nothing else: no other source, no other route, not even a read.
+func TestSourceUploadToken(t *testing.T) {
+	s := newTestServer(t, storage.NewMemoryStore(zap.NewNop().Sugar()), nil)
+	own := &common.Source{ID: uuid.New(), Name: "dualis", Type: common.SourceTypeCSV}
+	other := &common.Source{ID: uuid.New(), Name: "kurse", Type: common.SourceTypeCSV}
+	for _, src := range []*common.Source{own, other} {
+		if err := s.store.CreateSource(context.Background(), src); err != nil {
+			t.Fatal(err)
+		}
+	}
+	upload := func(id string) int {
+		ct, body := multipartFile(t, []byte("group,member,description\ndualis-ma-tmb26a,user:anna@dhbw.de,Kurs MA-TMB26A\n"))
+		return s.do(http.MethodPost, "/v1/sync/sources/"+id+"/upload", uploadToken, ct, body).Code
+	}
+
+	if code := upload(own.ID.String()); code != http.StatusOK {
+		t.Errorf("upload to own source: %d", code)
+	}
+	if code := upload(other.ID.String()); code != http.StatusForbidden {
+		t.Errorf("upload to another source: %d", code)
+	}
+	if code := upload(uuid.NewString()); code != http.StatusForbidden {
+		t.Errorf("upload to a missing source: %d", code)
+	}
+	if code := upload("not-a-uuid"); code != http.StatusForbidden {
+		t.Errorf("upload to an invalid id: %d", code)
+	}
+	for _, r := range []struct{ method, path string }{
+		{http.MethodGet, "/v1/sync/sources"},
+		{http.MethodGet, "/v1/sync/sources/" + own.ID.String() + "/log"},
+		{http.MethodPost, "/v1/sync/sources/" + own.ID.String() + "/trigger"},
+		{http.MethodGet, "/v1/groups/dualis-ma-tmb26a"},
+		{http.MethodPost, "/v1/groups"},
+	} {
+		if w := s.do(r.method, r.path, uploadToken, "application/json", []byte(`{"id":"x"}`)); w.Code != http.StatusForbidden {
+			t.Errorf("%s %s with an upload token: %d %s", r.method, r.path, w.Code, w.Body)
+		}
+	}
+
+	// A write token still uploads anywhere, a read token nowhere.
+	ct, body := multipartFile(t, []byte("kurs,anna@dhbw.de\n"))
+	if w := s.do(http.MethodPost, "/v1/sync/sources/"+other.ID.String()+"/upload", writeToken, ct, body); w.Code != http.StatusOK {
+		t.Errorf("write token upload: %d %s", w.Code, w.Body)
+	}
+	if w := s.do(http.MethodPost, "/v1/sync/sources/"+own.ID.String()+"/upload", readToken, ct, body); w.Code != http.StatusForbidden {
+		t.Errorf("read token upload: %d %s", w.Code, w.Body)
 	}
 }

@@ -18,14 +18,14 @@ import (
 // uploadRoute is the one route whose body may be larger than maxJSONBody.
 const uploadRoute = "/v1/sync/sources/:id/upload"
 
-func registerSyncRoutes(rg *gin.RouterGroup, store storage.Store, engine *syncp.Engine, scheduler *syncp.Scheduler, groupSvc *groupmgmt.Service, write gin.HandlerFunc) {
+func registerSyncRoutes(rg *gin.RouterGroup, store storage.Store, engine *syncp.Engine, scheduler *syncp.Scheduler, groupSvc *groupmgmt.Service, write, upload gin.HandlerFunc) {
 	s := rg.Group("/sync/sources")
 	s.GET("", listSources(store))
 	s.POST("", write, createSource(store, scheduler))
 	s.GET("/:id", getSource(store))
 	s.PUT("/:id", write, updateSource(store, scheduler))
 	s.DELETE("/:id", write, deleteSource(store, scheduler, groupSvc))
-	s.POST("/:id/upload", write, uploadAndSync(engine))
+	s.POST("/:id/upload", upload, uploadAndSync(engine))
 	s.POST("/:id/trigger", write, triggerSync(engine))
 	s.GET("/:id/log", getSyncLog(store))
 }
@@ -309,7 +309,7 @@ func reservedNames(c *gin.Context, store storage.Store, sourceID uuid.UUID, glob
 // uploadAndSync godoc
 //
 //	@Summary		Upload file and sync
-//	@Description	Uploads a CSV or LDIF file and immediately runs a sync for the given source. Replaces all tuples owned by this source.
+//	@Description	Uploads a CSV or LDIF file and immediately runs a sync for the given source. Replaces all tuples owned by this source. Needs a write token, or the upload token issued for this source (SOURCE_UPLOAD_TOKENS).
 //	@Tags			sync
 //	@Accept			multipart/form-data
 //	@Produce		json
@@ -319,6 +319,7 @@ func reservedNames(c *gin.Context, store storage.Store, sourceID uuid.UUID, glob
 //	@Success		200		{object}	map[string]any	"Sync result"
 //	@Failure		400		{object}	map[string]any	"Bad request"
 //	@Failure		401		{object}	map[string]any	"Unauthorized"
+//	@Failure		403		{object}	map[string]any	"Read token, or upload token of another source"
 //	@Failure		422		{object}	map[string]any	"Sync error (parse or apply failure)"
 //	@ID				uploadAndSync
 //	@Router			/v1/sync/sources/{id}/upload [post]

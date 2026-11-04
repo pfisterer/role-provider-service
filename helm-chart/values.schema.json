@@ -141,6 +141,9 @@
             "writeTokens": {
               "type": "string"
             },
+            "sourceUploadTokens": {
+              "type": "string"
+            },
             "corsAllowedOrigins": {
               "type": "array",
               "items": {

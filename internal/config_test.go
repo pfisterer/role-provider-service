@@ -21,3 +21,24 @@ func TestUnknownDBTypeIsAnError(t *testing.T) {
 		}
 	}
 }
+
+func TestSourceUploadTokens(t *testing.T) {
+	t.Setenv("API_TOKENS", "read-token")
+	t.Setenv("API_WRITE_TOKENS", "write-token")
+
+	t.Setenv("SOURCE_UPLOAD_TOKENS", "dualis=upload-1, other = upload-2")
+	cfg, err := loadAppConfiguration()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.SourceUploadTokens) != 2 || cfg.SourceUploadTokens[0].Source != "dualis" || cfg.SourceUploadTokens[1].Token != "upload-2" {
+		t.Errorf("got %+v", cfg.SourceUploadTokens)
+	}
+
+	for _, bad := range []string{"dualis", "=upload-1", "dualis=", "dualis=write-token", "dualis=read-token", "a=same,b=same"} {
+		t.Setenv("SOURCE_UPLOAD_TOKENS", bad)
+		if _, err := loadAppConfiguration(); err == nil || !strings.Contains(err.Error(), "SOURCE_UPLOAD_TOKENS") {
+			t.Errorf("%q: got %v", bad, err)
+		}
+	}
+}

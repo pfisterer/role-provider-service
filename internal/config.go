@@ -3,10 +3,12 @@ package app
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/joho/godotenv"
 	"github.com/pfisterer/cloud-self-service-golib/envconf"
 	"github.com/pfisterer/role-provider-service/internal/common"
+	"github.com/pfisterer/role-provider-service/internal/webserver"
 )
 
 // AppConfiguration is the top-level service configuration.
@@ -28,6 +30,8 @@ type AppConfiguration struct {
 	// sources. Empty means no token can write — writing the group graph means
 	// writing authorization for every consumer, so it is opt-in, not a fallback.
 	APIWriteTokens []string `json:"api_write_tokens"`
+	// SourceUploadTokens each let their holder upload to one sync source and do nothing else (SOURCE_UPLOAD_TOKENS, "<source>=<token>,…"), for a sync server outside the cluster that should not hold a write token.
+	SourceUploadTokens []webserver.SourceUploadToken `json:"-"`
 	// CORSAllowedOrigins lists the exact browser origins allowed to call this
 	// API cross-origin. Empty (the default) allows none, which is correct here:
 	// the consumers are services carrying an API token, not browsers.
@@ -126,6 +130,11 @@ func loadAppConfiguration() (AppConfiguration, error) {
 		},
 		AdminTokens: envconf.StringSlice("ADMIN_TOKENS", nil),
 	}
+	uploadTokens, err := parseSourceUploadTokens(envconf.StringSlice("SOURCE_UPLOAD_TOKENS", nil), cfg.APITokens, cfg.APIWriteTokens)
+	if err != nil {
+		return AppConfiguration{}, fmt.Errorf("SOURCE_UPLOAD_TOKENS: %w", err)
+	}
+	cfg.SourceUploadTokens = uploadTokens
 	// An unknown backend is a typo, and falling back to the in-memory store would start a service that answers from empty data and forgets every write.
 	if cfg.DBType != "memory" && cfg.DBType != "postgres" {
 		return AppConfiguration{}, fmt.Errorf("DB_TYPE must be \"memory\" or \"postgres\", got %q", cfg.DBType)
@@ -142,4 +151,30 @@ func loadAppConfiguration() (AppConfiguration, error) {
 	}
 
 	return cfg, nil
+}
+
+// parseSourceUploadTokens reads "<source>=<token>" entries. A token that is also a read or write token would be both at once, and one shared by two sources would open both, so either is refused.
+func parseSourceUploadTokens(entries, readTokens, writeTokens []string) ([]webserver.SourceUploadToken, error) {
+	other := map[string]bool{}
+	for _, t := range append(append([]string{}, readTokens...), writeTokens...) {
+		other[t] = true
+	}
+	seen := map[string]bool{}
+	var out []webserver.SourceUploadToken
+	for _, e := range entries {
+		source, token, ok := strings.Cut(e, "=")
+		source, token = strings.TrimSpace(source), strings.TrimSpace(token)
+		if !ok || source == "" || token == "" {
+			return nil, fmt.Errorf("entry %d is not <source>=<token>", len(out)+1)
+		}
+		if other[token] {
+			return nil, fmt.Errorf("the token for source %q is also a read or write token", source)
+		}
+		if seen[token] {
+			return nil, fmt.Errorf("the token for source %q is used for another source too", source)
+		}
+		seen[token] = true
+		out = append(out, webserver.SourceUploadToken{Source: source, Token: token})
+	}
+	return out, nil
 }
