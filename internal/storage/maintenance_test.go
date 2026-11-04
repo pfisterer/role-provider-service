@@ -211,3 +211,32 @@ func TestChangeRelation(t *testing.T) {
 		})
 	}
 }
+
+// A group the import no longer names goes with its last entry, unless something still points at it: an entry in another group or a manager.
+func TestReplaceTuples_DropsGroupsTheImportLeft(t *testing.T) {
+	ctx := context.Background()
+	for name, s := range storesUnderTest(t) {
+		t.Run(name, func(t *testing.T) {
+			src := uuid.New()
+			_, _, err := s.ReplaceTuples(ctx, src, []common.TuplePair{
+				{GroupID: "kurs-alt", MemberType: "user", MemberID: "a@x"},
+				{GroupID: "kurs-eingehaengt", MemberType: "user", MemberID: "b@x"},
+				{GroupID: "kurs-verwaltet", MemberType: "user", MemberID: "c@x"},
+				{GroupID: "kurs-neu", MemberType: "user", MemberID: "d@x"},
+			}, nil)
+			must(t, err)
+			must(t, s.CreateGroup(ctx, &common.Group{ID: "zwr-kurs"}))
+			must(t, s.AddMember(ctx, "zwr-kurs", "", "group", "kurs-eingehaengt", nil, nil))
+			must(t, s.AddManager(ctx, "kurs-verwaltet", common.Manager{Token: "user:m@x"}))
+
+			_, _, err = s.ReplaceTuples(ctx, src, []common.TuplePair{{GroupID: "kurs-neu", MemberType: "user", MemberID: "d@x"}}, nil)
+			must(t, err)
+			for id, want := range map[string]bool{"kurs-alt": false, "kurs-eingehaengt": true, "kurs-verwaltet": true, "kurs-neu": true, "zwr-kurs": true} {
+				g, err := s.GetGroup(ctx, id)
+				if got := err == nil && g != nil; got != want {
+					t.Errorf("%s present = %v, want %v", id, got, want)
+				}
+			}
+		})
+	}
+}

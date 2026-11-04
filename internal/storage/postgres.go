@@ -959,7 +959,12 @@ func (s *PostgresStore) ReplaceTuples(ctx context.Context, sourceID uuid.UUID, n
 		}
 		added = len(toInsert)
 
-		return nil
+		// A group the import no longer names goes with its last entry — a course that ended, a level the export dropped. Kept, empty, while anything still points at it: an entry in another group, a manager, or a manager entry naming it, so a hand-maintained group never loses an entry because a source moved on.
+		return tx.Exec(`DELETE FROM groups g
+			WHERE g.source_id = ?
+			  AND NOT EXISTS (SELECT 1 FROM tuples t WHERE t.obj_id = g.id OR (t.subj_type = 'group' AND t.subj_id = g.id))
+			  AND NOT EXISTS (SELECT 1 FROM group_managers m WHERE m.group_id = g.id OR m.token = 'group:' || g.id OR m.token LIKE 'group:' || g.id || '#%')`,
+			sourceID).Error
 	})
 	return
 }

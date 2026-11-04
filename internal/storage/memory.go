@@ -650,6 +650,23 @@ func (s *MemoryStore) ReplaceTuples(_ context.Context, sourceID uuid.UUID, newTu
 		kept = append(kept, t)
 	}
 	s.tuples = kept
+
+	// As in the Postgres store: a group of this source with nothing in it and nothing pointing at it goes.
+	for id, g := range s.groups {
+		if g.SourceID == nil || *g.SourceID != sourceID || len(s.managers[id]) > 0 {
+			continue
+		}
+		used := slices.ContainsFunc(s.tuples, func(t memTuple) bool { return t.objID == id || (t.subjType == "group" && t.subjID == id) })
+		for _, ms := range s.managers {
+			used = used || slices.ContainsFunc(ms, func(m common.Manager) bool {
+				gid, _ := common.SplitGroupRelation(strings.TrimPrefix(m.Token, common.GroupPrefix))
+				return strings.HasPrefix(m.Token, common.GroupPrefix) && gid == id
+			})
+		}
+		if !used {
+			delete(s.groups, id)
+		}
+	}
 	return
 }
 
