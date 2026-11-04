@@ -88,9 +88,9 @@ func tokens(groups []common.Group) []string {
 	return out
 }
 
-// The search box reads like a search box: words OR, phrases and UND/+ AND,
-// wildcards, umlauts folded, and each relation held in a group offered as an
-// entry of its own.
+// The search box reads like a search box: words AND, ODER/OR for alternatives,
+// phrases, wildcards, umlauts folded, and each relation held in a group offered
+// as an entry of its own.
 func TestSearchSyntax(t *testing.T) {
 	c := testCache(t, []common.Group{
 		{ID: "standort-ma", Token: "group:standort-ma", Description: "DHBW Mannheim (aus bwIDM)", Relations: []string{"beschaeftigte", "studierende"}},
@@ -105,16 +105,17 @@ func TestSearchSyntax(t *testing.T) {
 		query string
 		want  []string
 	}{
-		{"words are OR", "karlsruhe technik", []string{"group:fak-technik", "group:standort-ka", "group:standort-ka#beschaeftigte"}},
-		{"UND makes both required, and the role is a term",
-			"mannheim UND beschäftigte", []string{"group:standort-ma#beschaeftigte"}},
-		{"plus is AND too", "mannheim +beschaeftigte", []string{"group:standort-ma#beschaeftigte"}},
+		{"words are AND, and the role is a term", "mannheim beschäftigte", []string{"group:standort-ma#beschaeftigte"}},
+		{"UND and plus change nothing", "mannheim UND +beschaeftigte", []string{"group:standort-ma#beschaeftigte"}},
+		{"ODER makes alternatives", "karlsruhe ODER technik", []string{"group:fak-technik", "group:standort-ka", "group:standort-ka#beschaeftigte"}},
+		{"alternatives and a required word", "dhbw karlsruhe OR studierende", []string{"group:standort-ka", "group:standort-ka#beschaeftigte", "group:standort-ma#studierende", "group:studierende-dhbw-ma"}},
+		{"ODER at the start is a word gone", "ODER technik", []string{"group:fak-technik"}},
 		{"phrase", `"fakultät technik"`, []string{"group:fak-technik"}},
 		{"wildcard on a whole id, with the group's roles", "*-ka", []string{"group:standort-ka", "group:standort-ka#beschaeftigte"}},
 		{"wildcard prefix", "stud*", []string{"group:standort-ma#studierende", "group:studierende-dhbw-ma"}},
 		{"an exact id comes first", "group:dhbw-ma",
 			[]string{"group:dhbw-ma", "group:studierende-dhbw-ma"}},
-		{"more matching terms rank higher", "mannheim studierende",
+		{"more matching alternatives rank higher", "mannheim ODER studierende",
 			[]string{"group:standort-ma#studierende", "group:studierende-dhbw-ma", "group:dhbw-ma", "group:standort-ma", "group:standort-ma#beschaeftigte"}},
 	}
 	for _, tt := range tests {
@@ -145,5 +146,17 @@ func TestSearchBySource(t *testing.T) {
 	}
 	if got := ids(c.Search("keycloak UND mannheim", 0)); !slices.Equal(got, []string{"standort-ma"}) {
 		t.Errorf("keycloak UND mannheim = %v", got)
+	}
+}
+
+// The case that made words AND: a Studiengang named at every location, narrowed to one.
+func TestSearchNarrowsByEveryWord(t *testing.T) {
+	c := testCache(t, []common.Group{
+		{ID: "dualis-ma-wdski24a", Token: "group:dualis-ma-wdski24a", Description: "Kurs MA-WDSKI24A · Data Science und Künstliche Intelligenz · Mannheim"},
+		{ID: "dualis-hdh-wds2025", Token: "group:dualis-hdh-wds2025", Description: "Kurs HDH-WDS2025 · Data Science und Künstliche Intelligenz · Heidenheim"},
+		{ID: "dualis-ma-wwi24a", Token: "group:dualis-ma-wwi24a", Description: "Kurs MA-WWI24A · Wirtschaftsinformatik · Mannheim"},
+	})
+	if got := tokens(c.Search("data science mannheim", 0)); !slices.Equal(got, []string{"group:dualis-ma-wdski24a"}) {
+		t.Errorf("got %v", got)
 	}
 }

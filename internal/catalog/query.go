@@ -8,17 +8,18 @@ import (
 // A query is what a person types into a group search box, read the way search
 // boxes usually are:
 //
-//	mannheim karlsruhe         either term (OR)
-//	"fak technik"              this phrase, required
+//	data science mannheim      every word (AND)
+//	mannheim ODER karlsruhe    either word (also OR, |)
+//	"fak technik"              this phrase
 //	stud*  *-ma                wildcards, matched against a whole field or word
-//	mannheim UND studierende   both terms (also AND, &, or +studierende)
 //
-// Terms are compared after folding — lowercase, umlauts spelled out — so
-// "beschäftigte" finds "beschaeftigte". A "group:" prefix is dropped, so a
-// pasted token finds its group.
+// UND, AND, & and a leading + are accepted and change nothing, since words are
+// required anyway. Terms are compared after folding — lowercase, umlauts
+// spelled out — so "beschäftigte" finds "beschaeftigte". A "group:" prefix is
+// dropped, so a pasted token finds its group.
 type query struct {
-	required []term
-	optional []term
+	// clauses must all match; the terms within one are alternatives.
+	clauses [][]term
 }
 
 type term struct {
@@ -26,65 +27,57 @@ type term struct {
 	glob *regexp.Regexp // set when the term has a wildcard
 }
 
-// andWords join the terms on either side into required ones.
-var andWords = map[string]bool{"und": true, "and": true, "&": true}
+var (
+	andWords = map[string]bool{"und": true, "and": true, "&": true}
+	orWords  = map[string]bool{"oder": true, "or": true, "|": true}
+)
 
 func parseQuery(raw string) query {
-	var words []struct {
+	type word struct {
 		text   string
 		phrase bool
 	}
+	var words []word
 	rest := raw
 	for {
 		before, quoted, found := cutQuoted(rest)
 		for _, w := range strings.Fields(before) {
-			words = append(words, struct {
-				text   string
-				phrase bool
-			}{w, false})
+			words = append(words, word{w, false})
 		}
 		if !found {
 			break
 		}
 		if q := strings.TrimSpace(quoted.text); q != "" {
-			words = append(words, struct {
-				text   string
-				phrase bool
-			}{q, true})
+			words = append(words, word{q, true})
 		}
 		rest = quoted.rest
 	}
 
 	var q query
-	required := make([]bool, len(words))
-	for i, w := range words {
+	or := false
+	for _, w := range words {
 		if !w.phrase && andWords[strings.ToLower(w.text)] {
-			if i > 0 {
-				required[i-1] = true
-			}
-			if i+1 < len(words) {
-				required[i+1] = true
-			}
-		}
-	}
-	for i, w := range words {
-		text := w.text
-		if !w.phrase && andWords[strings.ToLower(text)] {
 			continue
 		}
-		req := required[i] || w.phrase
-		if !w.phrase && strings.HasPrefix(text, "+") {
-			text, req = text[1:], true
+		if !w.phrase && orWords[strings.ToLower(w.text)] {
+			or = len(q.clauses) > 0
+			continue
+		}
+		text := w.text
+		if !w.phrase {
+			text = strings.TrimPrefix(text, "+")
 		}
 		t, ok := newTerm(text)
 		if !ok {
 			continue
 		}
-		if req {
-			q.required = append(q.required, t)
+		if or {
+			last := len(q.clauses) - 1
+			q.clauses[last] = append(q.clauses[last], t)
 		} else {
-			q.optional = append(q.optional, t)
+			q.clauses = append(q.clauses, []term{t})
 		}
+		or = false
 	}
 	return q
 }
@@ -118,7 +111,7 @@ func newTerm(raw string) (term, bool) {
 }
 
 // empty reports whether the query asks for nothing in particular.
-func (q query) empty() bool { return len(q.required) == 0 && len(q.optional) == 0 }
+func (q query) empty() bool { return len(q.clauses) == 0 }
 
 // matches reports whether an entry's fields satisfy the term: a plain term is
 // a substring of any field, a wildcard term matches a whole field or one of
@@ -144,34 +137,30 @@ func (t term) matches(fields []string) bool {
 }
 
 // score returns how well the fields answer the query, or -1 for no match:
-// every required term must match, and if there are optional terms at least
-// one of them. More matching terms rank higher.
+// every clause must match through one of its terms. Each matching term counts,
+// so an entry answering more of the alternatives ranks higher.
 func (q query) score(fields []string) int {
 	n := 0
-	for _, t := range q.required {
-		if !t.matches(fields) {
+	for _, clause := range q.clauses {
+		matched := 0
+		for _, t := range clause {
+			if t.matches(fields) {
+				matched++
+			}
+		}
+		if matched == 0 {
 			return -1
 		}
-		n++
+		n += matched
 	}
-	optional := 0
-	for _, t := range q.optional {
-		if t.matches(fields) {
-			optional++
-		}
-	}
-	if len(q.optional) > 0 && optional == 0 {
-		return -1
-	}
-	return n + optional
+	return n
 }
 
 // exact reports whether the query is exactly this id — the case of a token
 // pasted or checked for existence, which must come first whatever else
 // matches.
 func (q query) exact(id string) bool {
-	all := append(append([]term{}, q.required...), q.optional...)
-	return len(all) == 1 && all[0].glob == nil && all[0].text == id
+	return len(q.clauses) == 1 && len(q.clauses[0]) == 1 && q.clauses[0][0].glob == nil && q.clauses[0][0].text == id
 }
 
 var folder = strings.NewReplacer("ä", "ae", "ö", "oe", "ü", "ue", "ß", "ss")
