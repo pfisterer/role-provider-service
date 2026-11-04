@@ -240,3 +240,25 @@ func TestReplaceTuples_DropsGroupsTheImportLeft(t *testing.T) {
 		})
 	}
 }
+
+// The tree's edges: each group in a group once, expired entries left out.
+func TestGroupEdges(t *testing.T) {
+	ctx := context.Background()
+	for name, s := range storesUnderTest(t) {
+		t.Run(name, func(t *testing.T) {
+			past := time.Now().Add(-time.Hour)
+			for _, id := range []string{"a", "b", "c"} {
+				must(t, s.CreateGroup(ctx, &common.Group{ID: id}))
+			}
+			must(t, s.AddMember(ctx, "a", "", "group", "b", nil, nil))
+			must(t, s.AddMember(ctx, "a", "dozent", "group", "b", nil, nil))
+			must(t, s.AddMember(ctx, "a", "", "group", "c", nil, &past))
+			must(t, s.AddMember(ctx, "b", "", "user", "x@x", nil, nil))
+			edges, err := s.GroupEdges(ctx)
+			must(t, err)
+			if len(edges) != 1 || edges[0] != [2]string{"a", "b"} {
+				t.Errorf("edges %v", edges)
+			}
+		})
+	}
+}

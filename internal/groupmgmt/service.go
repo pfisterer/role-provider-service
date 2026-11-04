@@ -296,6 +296,8 @@ func (s *Service) localGroup(ctx context.Context, caller Caller, token string) (
 	return g, nil
 }
 
+func (s *Service) isLocal(g *common.Group) bool { return g.SourceID != nil && *g.SourceID == s.localID }
+
 // mayManage reports whether the caller may maintain the group: an admin, or one of the caller's tokens is among its managers.
 func (s *Service) mayManage(ctx context.Context, caller Caller, groupID string) (bool, error) {
 	if caller.Admin {
@@ -543,15 +545,17 @@ type GroupDetail struct {
 	Group       common.Group        `json:"group"`
 	Memberships []common.Membership `json:"memberships"`
 	Managers    []common.Manager    `json:"managers"`
-	// MayDelete: the caller may delete the group (admins).
+	// Editable: a local group the caller maintains; a group of a sync source is shown to admins read-only.
+	Editable bool `json:"editable"`
+	// MayDelete: the caller may delete the group (admins, local groups).
 	MayDelete bool `json:"may_delete"`
 }
 
-// Detail returns a group the caller maintains with its direct entries and its managers.
+// Detail returns a group with its direct entries and its managers: one the caller maintains, or for an admin any group, a sync source's read-only.
 func (s *Service) Detail(ctx context.Context, caller Caller, groupToken string) (*GroupDetail, error) {
 	ctx, cancel := s.ctx(ctx)
 	defer cancel()
-	g, err := s.localGroup(ctx, caller, groupToken)
+	g, err := s.readableGroup(ctx, caller, groupToken)
 	if err != nil {
 		return nil, err
 	}
@@ -567,15 +571,16 @@ func (s *Service) Detail(ctx context.Context, caller Caller, groupToken string) 
 		Group:       s.withSourceNames(ctx, []common.Group{*g})[0],
 		Memberships: memberships,
 		Managers:    managers,
-		MayDelete:   caller.Admin,
+		Editable:    s.isLocal(g),
+		MayDelete:   caller.Admin && s.isLocal(g),
 	}, nil
 }
 
-// EffectiveMembers returns everyone a group the caller maintains counts in the end, sub-groups resolved and expired entries left out. Pattern rules are not people and not listed.
+// EffectiveMembers returns everyone a group counts in the end (one the caller may look at, see Detail), sub-groups resolved and expired entries left out. Pattern rules are not people and not listed.
 func (s *Service) EffectiveMembers(ctx context.Context, caller Caller, groupToken string) ([]string, error) {
 	ctx, cancel := s.ctx(ctx)
 	defer cancel()
-	g, err := s.localGroup(ctx, caller, groupToken)
+	g, err := s.readableGroup(ctx, caller, groupToken)
 	if err != nil {
 		return nil, err
 	}
@@ -592,11 +597,11 @@ func (s *Service) EffectiveMembers(ctx context.Context, caller Caller, groupToke
 	return users, nil
 }
 
-// History returns the most recent changes of a group the caller maintains.
+// History returns the most recent changes of a group the caller may look at (see Detail).
 func (s *Service) History(ctx context.Context, caller Caller, groupToken string, limit int) ([]common.Change, error) {
 	ctx, cancel := s.ctx(ctx)
 	defer cancel()
-	g, err := s.localGroup(ctx, caller, groupToken)
+	g, err := s.readableGroup(ctx, caller, groupToken)
 	if err != nil {
 		return nil, err
 	}

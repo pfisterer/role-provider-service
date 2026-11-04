@@ -13,6 +13,7 @@ import (
 func registerManageRoutes(rg *gin.RouterGroup, svc *groupmgmt.Service, sourceName string, maxLimit int) {
 	rg.GET("/me", manageMe(svc, sourceName))
 	rg.GET("/principals", manageSearchPrincipals(svc, maxLimit))
+	rg.GET("/sources", manageListSources(svc))
 	g := rg.Group("/groups")
 	g.GET("", manageListGroups(svc))
 	g.POST("", manageCreateGroup(svc))
@@ -112,24 +113,59 @@ func manageSearchPrincipals(svc *groupmgmt.Service, maxLimit int) gin.HandlerFun
 
 // manageListGroups godoc
 //
-//	@Summary		Groups the caller maintains
-//	@Description	The groups of the local source the caller may maintain — all of them for an admin — optionally narrowed by a search query.
+//	@Summary		Groups to browse
+//	@Description	For an admin, every source: the groups entered in parent; else those matching q, optionally of one source; else the top of a source's tree (its groups no other group of that source contains); with none of these the local groups. Everybody else gets the local groups they maintain, narrowed by q. Each group says whether the caller may change it (editable: local groups only) and how many groups it holds.
 //	@Tags			manage
 //	@Produce		json
 //	@Security		Bearer
-//	@Param			q	query		string	false	"Search query"
-//	@Success		200	{array}		common.Group
-//	@Failure		401	{object}	map[string]any	"Not signed in"
+//	@Param			q		query		string	false	"Search query"
+//	@Param			source	query		string	false	"Source name (admins)"
+//	@Param			parent	query		string	false	"Group whose groups to list (admins)"
+//	@Param			limit	query		int		false	"Page size"	default(200)
+//	@Param			offset	query		int		false	"Entries to skip"
+//	@Success		200		{object}	groupmgmt.GroupPage
+//	@Failure		401		{object}	map[string]any	"Not signed in"
+//	@Failure		404		{object}	map[string]any	"No such parent"
 //	@ID				manageListGroups
 //	@Router			/v1/manage/groups [get]
 func manageListGroups(svc *groupmgmt.Service) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		groups, err := svc.ManagedGroups(c.Request.Context(), callerOf(c), c.Query("q"))
+		q := groupmgmt.BrowseQuery{Query: c.Query("q"), Source: c.Query("source"), Parent: c.Query("parent"), Limit: 200}
+		if n, err := strconv.Atoi(c.Query("limit")); err == nil && n > 0 && n <= 1000 {
+			q.Limit = n
+		}
+		if n, err := strconv.Atoi(c.Query("offset")); err == nil && n > 0 {
+			q.Offset = n
+		}
+		page, err := svc.Browse(c.Request.Context(), callerOf(c), q)
 		if err != nil {
 			respondError(c, err)
 			return
 		}
-		c.JSON(http.StatusOK, groups)
+		c.JSON(http.StatusOK, page)
+	}
+}
+
+// manageListSources godoc
+//
+//	@Summary		Every source
+//	@Description	The sources with their number of groups and last sync, the local one first: its groups are maintained here, the others are read-only copies of their sync. Admins only.
+//	@Tags			manage
+//	@Produce		json
+//	@Security		Bearer
+//	@Success		200	{array}		groupmgmt.SourceSummary
+//	@Failure		401	{object}	map[string]any	"Not signed in"
+//	@Failure		403	{object}	map[string]any	"Not an admin"
+//	@ID				manageListSources
+//	@Router			/v1/manage/sources [get]
+func manageListSources(svc *groupmgmt.Service) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		sources, err := svc.Sources(c.Request.Context(), callerOf(c))
+		if err != nil {
+			respondError(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, sources)
 	}
 }
 
@@ -166,7 +202,7 @@ func manageCreateGroup(svc *groupmgmt.Service) gin.HandlerFunc {
 // manageGetGroup godoc
 //
 //	@Summary		A group with its entries and managers
-//	@Description	A group the caller maintains: its direct entries with relation and expiry (expired ones included and marked), and who maintains it.
+//	@Description	A group the caller maintains, or for an admin any group (a sync source's read-only, editable false): its direct entries with relation and expiry (expired ones included and marked), and who maintains it.
 //	@Tags			manage
 //	@Produce		json
 //	@Security		Bearer
@@ -333,7 +369,7 @@ func manageChangeRelation(svc *groupmgmt.Service) gin.HandlerFunc {
 // manageEffectiveMembers godoc
 //
 //	@Summary		Everyone the group counts
-//	@Description	The people a group the caller maintains counts in the end: sub-groups resolved, expired entries left out. People who are members only through a pattern are not listed.
+//	@Description	The people a group counts in the end (one the caller maintains, or for an admin any group): sub-groups resolved, expired entries left out. People who are members only through a pattern are not listed.
 //	@Tags			manage
 //	@Produce		json
 //	@Security		Bearer
@@ -412,7 +448,7 @@ func manageRemoveManager(svc *groupmgmt.Service) gin.HandlerFunc {
 // manageHistory godoc
 //
 //	@Summary		History of a group
-//	@Description	The most recent changes of a group the caller maintains, newest first: who added or removed what, and for whom an admin acted.
+//	@Description	The most recent changes of a group (one the caller maintains, or for an admin any group), newest first: who added or removed what, and for whom an admin acted.
 //	@Tags			manage
 //	@Produce		json
 //	@Security		Bearer

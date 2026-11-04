@@ -170,6 +170,8 @@ type Store interface {
 	RemoveManager(ctx context.Context, groupID, token string) error
 	// ManagedGroups returns the groups any of the tokens may maintain.
 	ManagedGroups(ctx context.Context, tokens []string) ([]string, error)
+	// GroupEdges returns every live entry of a group in a group, as [parent, child] ids — the shape of the group tree, for browsing it.
+	GroupEdges(ctx context.Context) ([][2]string, error)
 
 	// History
 	AddChange(ctx context.Context, c *common.Change) error
@@ -1024,6 +1026,22 @@ func (s *PostgresStore) ManagedGroups(ctx context.Context, tokens []string) ([]s
 	}
 	err := s.db.WithContext(ctx).Model(&DBManager{}).Distinct("group_id").Where("token IN ?", tokens).Order("group_id").Pluck("group_id", &ids).Error
 	return ids, err
+}
+
+func (s *PostgresStore) GroupEdges(ctx context.Context) ([][2]string, error) {
+	var rows []struct {
+		ObjID  string `gorm:"column:obj_id"`
+		SubjID string `gorm:"column:subj_id"`
+	}
+	if err := s.db.WithContext(ctx).Model(&DBTuple{}).Distinct("obj_id", "subj_id").
+		Where("subj_type = 'group' AND " + liveTuple).Order("obj_id, subj_id").Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	out := make([][2]string, len(rows))
+	for i, r := range rows {
+		out[i] = [2]string{r.ObjID, r.SubjID}
+	}
+	return out, nil
 }
 
 // ── History ──────────────────────────────────────────────────────────────────

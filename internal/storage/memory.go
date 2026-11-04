@@ -729,6 +729,27 @@ func (s *MemoryStore) RemoveManager(_ context.Context, groupID, token string) er
 	return nil
 }
 
+func (s *MemoryStore) GroupEdges(_ context.Context) ([][2]string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	seen := map[[2]string]bool{}
+	out := [][2]string{}
+	for _, t := range s.tuples {
+		e := [2]string{t.objID, t.subjID}
+		if t.subjType == "group" && t.live() && !seen[e] {
+			seen[e] = true
+			out = append(out, e)
+		}
+	}
+	slices.SortFunc(out, func(a, b [2]string) int {
+		if c := strings.Compare(a[0], b[0]); c != 0 {
+			return c
+		}
+		return strings.Compare(a[1], b[1])
+	})
+	return out, nil
+}
+
 func (s *MemoryStore) ManagedGroups(_ context.Context, tokens []string) ([]string, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

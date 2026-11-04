@@ -113,9 +113,9 @@ func TestManageAsManagerAdminAndOnBehalf(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &me); err != nil || !me.ManagesAny || me.Admin || me.MayActAs || me.SourceName != "ZWR" {
 		t.Errorf("dekan /me: %s", w.Body)
 	}
-	var groups []common.Group
+	var groups groupmgmt.GroupPage
 	w = s.as(http.MethodGet, "/v1/manage/groups", "id-dekan@x", "", "")
-	if err := json.Unmarshal(w.Body.Bytes(), &groups); err != nil || len(groups) != 1 || groups[0].ID != "wwi23seb" || groups[0].SourceName != "ZWR" {
+	if err := json.Unmarshal(w.Body.Bytes(), &groups); err != nil || groups.Total != 1 || groups.Items[0].ID != "wwi23seb" || groups.Items[0].SourceName != "ZWR" || !groups.Items[0].Editable {
 		t.Errorf("dekan's groups: %s", w.Body)
 	}
 
@@ -152,7 +152,7 @@ func TestManageAsManagerAdminAndOnBehalf(t *testing.T) {
 	}
 	// ... and acting for the dekan sees the dekan's groups, and writes in the dekan's name with the admin recorded.
 	w = s.as(http.MethodGet, "/v1/manage/groups", "id-root@x", "dekan@x", "")
-	if err := json.Unmarshal(w.Body.Bytes(), &groups); err != nil || len(groups) != 2 {
+	if err := json.Unmarshal(w.Body.Bytes(), &groups); err != nil || groups.Total != 2 {
 		t.Errorf("acting for the dekan: %s", w.Body)
 	}
 	if w := s.as(http.MethodDelete, "/v1/manage/groups/wwi23seb/members?member=user:anna@x&relation=dozent", "id-root@x", "dekan@x", ""); w.Code != http.StatusNoContent {
