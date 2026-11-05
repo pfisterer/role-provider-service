@@ -41,3 +41,8 @@ jobs:
       - name: Tests
         if: '!cancelled()'
         run: make test
+
+      # Known vulnerabilities in the code and its dependencies, from the Go vulnerability database. Fails only for what the code actually reaches; a vulnerable module it never calls is listed, not failed. Pinned so a new scanner release cannot break the run on its own.
+      - name: govulncheck
+        if: '!cancelled()'
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
