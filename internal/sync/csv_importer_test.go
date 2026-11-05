@@ -137,3 +137,19 @@ func TestParseCSV_InvalidIDRefusesTheFile(t *testing.T) {
 		t.Errorf("got %v, %+v", err, tuples)
 	}
 }
+
+// A member group may carry a relation as in a token; the parser keeps it with the group, lowercased, and refuses a malformed one.
+func TestParseCSV_MemberGroupRelation(t *testing.T) {
+	tuples, _, err := ParseCSV(strings.NewReader("group,member,relation\norga,group:Kurs#Studierende,studierende\norga,kurs#dozierende,dozierende\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tuples) != 2 || tuples[0].MemberType != "group" || tuples[0].MemberID != "kurs#studierende" || tuples[1].MemberType != "group" || tuples[1].MemberID != "kurs#dozierende" {
+		t.Errorf("tuples %+v", tuples)
+	}
+	for _, bad := range []string{"group:kurs#", "group:kurs#1x", "group:kurs#a#b"} {
+		if _, _, err := ParseCSV(strings.NewReader("orga," + bad + "\n")); !errors.Is(err, common.ErrInvalidID) {
+			t.Errorf("%s: got %v", bad, err)
+		}
+	}
+}

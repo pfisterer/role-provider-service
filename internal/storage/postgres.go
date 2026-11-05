@@ -65,15 +65,17 @@ func (DBSyncLog) TableName() string { return "sync_logs" }
 
 // DBTuple is a single Zanzibar-style relationship tuple.
 // obj_type is always "group". relation is "member" or a configured relation
-// (e.g. "dozent"), each of which implies membership. subj_rel is "member" when
-// subj_type is "group", else "".
+// (e.g. "dozent"), each of which implies membership. For a group subject,
+// subj_rel says whom of that group the tuple means: "member" everyone in it,
+// whatever their relation, any other relation only the people holding it there
+// (see common.MemberGroup). Users and patterns have subj_rel "".
 type DBTuple struct {
 	ID        uuid.UUID  `gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
 	ObjID     string     `gorm:"not null;uniqueIndex:idx_tuple_uniq"`
 	Relation  string     `gorm:"not null;default:'member';uniqueIndex:idx_tuple_uniq"`
 	SubjType  string     `gorm:"not null;uniqueIndex:idx_tuple_uniq"` // "user" | "group"
 	SubjID    string     `gorm:"not null;uniqueIndex:idx_tuple_uniq"`
-	SubjRel   string     `gorm:"not null;default:'';uniqueIndex:idx_tuple_uniq"` // "" | "member"
+	SubjRel   string     `gorm:"not null;default:'';uniqueIndex:idx_tuple_uniq"` // "" | "member" | a relation
 	SourceID  *uuid.UUID `gorm:"type:uuid;index"`
 	CreatedAt time.Time
 	// ExpiresAt, if set, is when the tuple stops counting. Only tuples maintained here carry one; every query that resolves membership skips expired tuples (see liveTuple).
@@ -411,12 +413,13 @@ func dbGroupToCommon(r *DBGroup) *common.Group {
 // ── Members / Tuples ──────────────────────────────────────────────────────────
 
 func (s *PostgresStore) AddMember(ctx context.Context, groupID, relation, memberType, memberID string, sourceID *uuid.UUID, expiresAt *time.Time) error {
+	subjID, subjRel := subject(memberType, memberID)
 	tuple := DBTuple{
 		ObjID:     groupID,
 		Relation:  common.NormalizeRelation(relation),
 		SubjType:  memberType,
-		SubjID:    memberID,
-		SubjRel:   subjRelFor(memberType),
+		SubjID:    subjID,
+		SubjRel:   subjRel,
 		SourceID:  sourceID,
 		ExpiresAt: expiresAt,
 	}
@@ -428,15 +431,16 @@ func (s *PostgresStore) AddMember(ctx context.Context, groupID, relation, member
 }
 
 func (s *PostgresStore) RemoveMember(ctx context.Context, groupID, relation, memberType, memberID string) error {
+	subjID, subjRel := subject(memberType, memberID)
 	return s.db.WithContext(ctx).
 		Where("obj_id = ? AND relation = ? AND subj_type = ? AND subj_id = ? AND subj_rel = ?",
-			groupID, common.NormalizeRelation(relation), memberType, memberID, subjRelFor(memberType)).
+			groupID, common.NormalizeRelation(relation), memberType, subjID, subjRel).
 		Delete(&DBTuple{}).Error
 }
 
 func (s *PostgresStore) ChangeRelation(ctx context.Context, groupID, memberType, memberID, from, to string) error {
 	from, to = common.NormalizeRelation(from), common.NormalizeRelation(to)
-	subjRel := subjRelFor(memberType)
+	memberID, subjRel := subject(memberType, memberID)
 	entry := func(tx *gorm.DB, relation string) *gorm.DB {
 		return tx.Model(&DBTuple{}).Where("obj_id = ? AND relation = ? AND subj_type = ? AND subj_id = ? AND subj_rel = ?",
 			groupID, relation, memberType, memberID, subjRel)
@@ -490,7 +494,7 @@ func (s *PostgresStore) GetDirectMembers(ctx context.Context, groupID, relation 
 	seen := map[string]struct{}{}
 	out := make([]string, 0, len(rows))
 	for _, r := range rows {
-		token := common.BuildToken(r.SubjType, r.SubjID)
+		token := memberToken(r.SubjType, r.SubjID, r.SubjRel)
 		if _, dup := seen[token]; dup {
 			continue
 		}
@@ -509,7 +513,7 @@ func (s *PostgresStore) ListMemberships(ctx context.Context, groupID string) ([]
 	out := make([]common.Membership, len(rows))
 	for i, r := range rows {
 		out[i] = common.Membership{
-			Member:    common.BuildToken(r.SubjType, r.SubjID),
+			Member:    memberToken(r.SubjType, r.SubjID, r.SubjRel),
 			Relation:  r.Relation,
 			ExpiresAt: r.ExpiresAt,
 			Expired:   r.ExpiresAt != nil && !r.ExpiresAt.After(now),
@@ -520,27 +524,31 @@ func (s *PostgresStore) ListMemberships(ctx context.Context, groupID string) ([]
 }
 
 // GetAllMembers resolves the transitive members holding relation on a group
-// using a recursive CTE. The relation filters only the first level: a
-// sub-group contributes all of its members (group:A in B#dozent makes every
-// member of A a dozent of B). $2 = ” means any relation, i.e. membership.
+// using a recursive CTE. The relation filters the first level; below it, a
+// sub-group contributes the people its entry means: group:A in B#dozent makes
+// every member of A a dozent of B, group:A#studierende in B#dozent only the
+// studierende of A (see common.MemberGroup). $2 = ” means any relation, i.e.
+// membership.
 func (s *PostgresStore) GetAllMembers(ctx context.Context, groupID, relation string) ([]string, error) {
 	const query = `
 WITH RECURSIVE expand AS (
-    SELECT subj_type, subj_id
+    SELECT subj_type, subj_id, subj_rel
     FROM tuples
     WHERE obj_id = $1 AND ($2 = '' OR relation = $2) AND ` + liveTuple + `
   UNION
-    SELECT t.subj_type, t.subj_id
+    SELECT t.subj_type, t.subj_id, t.subj_rel
     FROM tuples t
     INNER JOIN expand e ON e.subj_type = 'group' AND t.obj_id = e.subj_id
+        AND (e.subj_rel = 'member' OR t.relation = e.subj_rel)
     WHERE (t.expires_at IS NULL OR t.expires_at > now())
 )
-SELECT DISTINCT subj_type, subj_id FROM expand WHERE subj_type <> 'pattern'
-ORDER BY subj_type, subj_id`
+SELECT DISTINCT subj_type, subj_id, subj_rel FROM expand WHERE subj_type <> 'pattern'
+ORDER BY subj_type, subj_id, subj_rel`
 
 	type row struct {
 		SubjType string `gorm:"column:subj_type"`
 		SubjID   string `gorm:"column:subj_id"`
+		SubjRel  string `gorm:"column:subj_rel"`
 	}
 	var rows []row
 	filter := filterFor(common.NormalizeRelation(relation))
@@ -549,7 +557,7 @@ ORDER BY subj_type, subj_id`
 	}
 	out := make([]string, len(rows))
 	for i, r := range rows {
-		out[i] = common.BuildToken(r.SubjType, r.SubjID)
+		out[i] = memberToken(r.SubjType, r.SubjID, r.SubjRel)
 	}
 	return out, nil
 }
@@ -557,44 +565,44 @@ ORDER BY subj_type, subj_id`
 // GetUserTokens returns the user token, a "group:<id>" token for every group
 // the user is a member of (transitively; any relation counts), and a
 // "group:<id>#<relation>" token for every other relation the user holds.
+//
+// held is the set of (group, relation) pairs the user holds: the entries naming
+// them directly or through a pattern, then every entry whose subject is a group
+// the user holds the subject relation in — any relation for a plain group
+// subject (subj_rel member), exactly that one for "group:x#rel".
 func (s *PostgresStore) GetUserTokens(ctx context.Context, email string) ([]string, error) {
 	// Pattern rules matching the email. Glob matching is done in Go (for parity
 	// with the in-memory store and to keep the recursive SQL simple); the
-	// matched group IDs are injected into the CTE seed via $2, bound as a real
-	// text[] parameter: a list joined into a string would let one id split into
-	// several.
+	// matched groups and relations are injected into the CTE seed via $2 and $3,
+	// bound as real text[] parameters: a list joined into a string would let one
+	// id split into several.
 	patterns, err := s.patternMatches(ctx, email)
 	if err != nil {
 		return nil, err
 	}
 	patternGroups := make([]string, 0, len(patterns))
+	patternRelations := make([]string, 0, len(patterns))
 	for _, p := range patterns {
 		patternGroups = append(patternGroups, p.ObjID)
+		patternRelations = append(patternRelations, p.Relation)
 	}
-	// user_groups: membership, any relation. The final SELECT adds the
-	// non-member relations held directly or through one of those groups.
 	const query = `
-WITH RECURSIVE user_groups AS (
-    SELECT obj_id
+WITH RECURSIVE held AS (
+    SELECT obj_id, relation
     FROM tuples
     WHERE subj_type = 'user' AND subj_id = $1 AND ` + liveTuple + `
   UNION
-    SELECT unnest($2::text[])
+    SELECT p.obj_id, p.relation FROM unnest($2::text[], $3::text[]) AS p(obj_id, relation)
   UNION
-    SELECT t.obj_id
+    SELECT t.obj_id, t.relation
     FROM tuples t
-    INNER JOIN user_groups ug ON t.subj_type = 'group' AND t.subj_id = ug.obj_id
-        AND t.subj_rel = 'member'
+    INNER JOIN held h ON t.subj_type = 'group' AND t.subj_id = h.obj_id
+        AND (t.subj_rel = 'member' OR t.subj_rel = h.relation)
     WHERE (t.expires_at IS NULL OR t.expires_at > now())
 )
-SELECT obj_id, 'member' AS relation FROM user_groups
+SELECT DISTINCT obj_id, 'member' AS relation FROM held
 UNION
-SELECT t.obj_id, t.relation
-FROM tuples t
-WHERE t.relation <> 'member' AND (t.expires_at IS NULL OR t.expires_at > now()) AND (
-    (t.subj_type = 'user' AND t.subj_id = $1)
-    OR (t.subj_type = 'group' AND t.subj_rel = 'member' AND t.subj_id IN (SELECT obj_id FROM user_groups))
-)
+SELECT obj_id, relation FROM held WHERE relation <> 'member'
 ORDER BY relation, obj_id`
 
 	type row struct {
@@ -602,27 +610,13 @@ ORDER BY relation, obj_id`
 		Relation string `gorm:"column:relation"`
 	}
 	var rows []row
-	if err := s.db.WithContext(ctx).Raw(query, email, patternGroups).Scan(&rows).Error; err != nil {
+	if err := s.db.WithContext(ctx).Raw(query, email, patternGroups, patternRelations).Scan(&rows).Error; err != nil {
 		return nil, err
 	}
 	tokens := make([]string, 0, len(rows)+1)
 	tokens = append(tokens, common.UserPrefix+email) // always include own user token
-	seen := map[string]struct{}{}
 	for _, r := range rows {
-		token := common.GroupToken(r.ObjID, r.Relation)
-		seen[token] = struct{}{}
-		tokens = append(tokens, token)
-	}
-	// A pattern rule on a non-member relation grants that relation directly.
-	for _, p := range patterns {
-		if p.Relation == common.RelationMember {
-			continue
-		}
-		token := common.GroupToken(p.ObjID, p.Relation)
-		if _, dup := seen[token]; !dup {
-			seen[token] = struct{}{}
-			tokens = append(tokens, token)
-		}
+		tokens = append(tokens, common.GroupToken(r.ObjID, r.Relation))
 	}
 	return tokens, nil
 }
@@ -842,20 +836,21 @@ func (s *PostgresStore) ReplaceTuples(ctx context.Context, sourceID uuid.UUID, n
 			Relation string    `gorm:"column:relation"`
 			SubjType string    `gorm:"column:subj_type"`
 			SubjID   string    `gorm:"column:subj_id"`
+			SubjRel  string    `gorm:"column:subj_rel"`
 		}
 		var existing []minTuple
 		if err := tx.Model(&DBTuple{}).
-			Select("id, obj_id, relation, subj_type, subj_id").
+			Select("id, obj_id, relation, subj_type, subj_id, subj_rel").
 			Where("source_id = ?", sourceID).
 			Find(&existing).Error; err != nil {
 			return err
 		}
 
-		type key struct{ groupID, relation, memberType, memberID string }
+		type key struct{ groupID, relation, memberType, memberID, memberRel string }
 
 		existingMap := make(map[key]uuid.UUID, len(existing))
 		for _, t := range existing {
-			existingMap[key{t.ObjID, t.Relation, t.SubjType, t.SubjID}] = t.ID
+			existingMap[key{t.ObjID, t.Relation, t.SubjType, t.SubjID, t.SubjRel}] = t.ID
 		}
 
 		// Deduplicate incoming tuples and build the insert list + set of needed groups.
@@ -864,7 +859,8 @@ func (s *PostgresStore) ReplaceTuples(ctx context.Context, sourceID uuid.UUID, n
 		groupsNeeded := map[string]struct{}{}
 
 		for _, p := range newTuples {
-			k := key{p.GroupID, common.NormalizeRelation(p.Relation), p.MemberType, p.MemberID}
+			subjID, subjRel := subject(p.MemberType, p.MemberID)
+			k := key{p.GroupID, common.NormalizeRelation(p.Relation), p.MemberType, subjID, subjRel}
 			if _, dup := newSet[k]; dup {
 				continue
 			}
@@ -876,8 +872,8 @@ func (s *PostgresStore) ReplaceTuples(ctx context.Context, sourceID uuid.UUID, n
 					ObjID:    p.GroupID,
 					Relation: k.relation,
 					SubjType: p.MemberType,
-					SubjID:   p.MemberID,
-					SubjRel:  subjRelFor(p.MemberType),
+					SubjID:   subjID,
+					SubjRel:  subjRel,
 					SourceID: &sourceID,
 				})
 			}

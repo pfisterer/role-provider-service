@@ -204,7 +204,7 @@ func deleteGroup(svc *groupmgmt.Service) gin.HandlerFunc {
 // listMembers godoc
 //
 //	@Summary		List group members
-//	@Description	Returns the members of a group holding a relation (default "member", i.e. everyone in the group — every relation implies membership). By default resolves members transitively (recursive=true); a sub-group contributes all of its members. Set recursive=false for direct members only.
+//	@Description	Returns the members of a group holding a relation (default "member", i.e. everyone in the group — every relation implies membership). By default resolves members transitively (recursive=true); a sub-group contributes all of its members, or, entered as group:<id>#<relation>, only those holding that relation in it. Set recursive=false for direct members only. A sub-group entered with a relation is listed as group:<id>#<relation>.
 //	@Tags			groups
 //	@Produce		json
 //	@Security		Bearer
@@ -241,12 +241,12 @@ type addMemberRequest struct {
 // addMember godoc
 //
 //	@Summary		Add member to group
-//	@Description	Adds a user, group or pattern token to a group of the local source with a relation (default "member"), optionally until expires_at. A group token as member means all of that group's members hold the relation; a group that would end up containing itself is refused (409).
+//	@Description	Adds a user, group or pattern token to a group of the local source with a relation (default "member"), optionally until expires_at. A group token as member means all of that group's members hold the relation, group:<id>#<relation> only the people holding that relation in it (the relation must be configured); a group that would end up containing itself is refused (409).
 //	@Tags			groups
 //	@Accept			json
 //	@Security		Bearer
 //	@Param			token	path	string			true	"Group token"
-//	@Param			body	body	addMemberRequest	true	"Member token to add (e.g. user:email or group:id)"
+//	@Param			body	body	addMemberRequest	true	"Member token to add (e.g. user:email, group:id or group:id#relation)"
 //	@Success		204		"No content"
 //	@Failure		400		{object}	map[string]any	"Bad request"
 //	@Failure		401		{object}	map[string]any	"Unauthorized"
@@ -276,7 +276,7 @@ func addMember(svc *groupmgmt.Service) gin.HandlerFunc {
 //	@Tags			groups
 //	@Security		Bearer
 //	@Param			token	path	string	true	"Group token"
-//	@Param			member	path	string	true	"Member token to remove (e.g. user:email or group:id)"
+//	@Param			member	path	string	true	"Member token to remove (e.g. user:email, group:id or group:id#relation, the # as %23)"
 //	@Param			relation	query	string	false	"Relation to remove"	default(member)
 //	@Success		204		"No content"
 //	@Failure		401		{object}	map[string]any	"Unauthorized"

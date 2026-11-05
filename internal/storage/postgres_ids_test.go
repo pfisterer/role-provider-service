@@ -79,9 +79,15 @@ func TestPostgres_IDConstraints(t *testing.T) {
 		if err := pg.AddMember(ctx, id, "member", "user", "a@x", nil, nil); err == nil {
 			t.Errorf("tuples.obj_id: %q stored", id)
 		}
-		if err := pg.AddMember(ctx, "kurs", "member", "group", id, nil, nil); err == nil {
+		// "kurs#dozent" as a member is the group kurs with subject relation dozent, not an id.
+		if err := pg.AddMember(ctx, "kurs", "member", "group", id, nil, nil); err == nil && id != "kurs#dozent" {
 			t.Errorf("tuples.subj_id (group): %q stored", id)
 		}
+	}
+	var stored DBTuple
+	must(t, pg.DB().Where("obj_id = 'kurs' AND subj_type = 'group'").First(&stored).Error)
+	if stored.SubjID != "kurs" || stored.SubjRel != "dozent" {
+		t.Errorf("group:kurs#dozent stored as subj_id %q, subj_rel %q", stored.SubjID, stored.SubjRel)
 	}
 	if err := pg.DB().Exec(`INSERT INTO groups (id) VALUES ('kurs_a.b-1')`).Error; err != nil {
 		t.Errorf("valid id refused: %v", err)

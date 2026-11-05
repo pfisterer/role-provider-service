@@ -415,7 +415,7 @@ func (s *Service) Adopt(ctx context.Context, caller Caller, from *uuid.UUID, det
 
 // ── Members ───────────────────────────────────────────────────────────────────
 
-// AddMember adds a member (user, group or pattern token) to a group the caller maintains, with the given relation ("" = member). expiresAt, if set, must lie in the future; adding a member that exists sets its expiry.
+// AddMember adds a member (user, group or pattern token) to a group the caller maintains, with the given relation ("" = member). A group token may name a relation, "group:x#studierende": then only the people holding it in x are meant, not everyone in x (see common.MemberGroup). expiresAt, if set, must lie in the future; adding a member that exists sets its expiry.
 func (s *Service) AddMember(ctx context.Context, caller Caller, groupToken, relation, memberToken string, expiresAt *time.Time) error {
 	relation, err := s.checkRelation(relation)
 	if err != nil {
@@ -424,6 +424,13 @@ func (s *Service) AddMember(ctx context.Context, caller Caller, groupToken, rela
 	memberType, memberID, err := parseMemberToken(memberToken)
 	if err != nil {
 		return err
+	}
+	if memberType == "group" {
+		if _, memberRel := common.MemberGroup(memberID); memberRel != common.RelationMember {
+			if _, err := s.checkRelation(memberRel); err != nil {
+				return err
+			}
+		}
 	}
 	if expiresAt != nil && !expiresAt.After(time.Now()) {
 		return fmt.Errorf("%w: %s is not in the future", ErrInvalidExpiry, expiresAt.Format(time.RFC3339))
@@ -439,7 +446,8 @@ func (s *Service) AddMember(ctx context.Context, caller Caller, groupToken, rela
 		return err
 	}
 	if memberType == "group" {
-		if err := s.checkNoCycle(ctx, g.ID, memberID); err != nil {
+		child, _ := common.MemberGroup(memberID)
+		if err := s.checkNoCycle(ctx, g.ID, child); err != nil {
 			return err
 		}
 	}
@@ -451,17 +459,33 @@ func (s *Service) AddMember(ctx context.Context, caller Caller, groupToken, rela
 	return nil
 }
 
-// checkNoCycle refuses a group as member of a group it already contains, directly or further down: the two would then contain each other.
+// checkNoCycle refuses a group as member of a group it already contains, directly or further down: the two would then contain each other. Every entry of a group in a group counts, whatever relation it names: the tree the pages show would loop either way.
 func (s *Service) checkNoCycle(ctx context.Context, groupID, memberID string) error {
 	if groupID == memberID {
 		return fmt.Errorf("%w: group '%s' cannot contain itself", ErrCycle, groupID)
 	}
-	below, err := s.store.GetAllMembers(ctx, memberID, "")
+	edges, err := s.store.GroupEdges(ctx)
 	if err != nil {
 		return err
 	}
-	if slices.Contains(below, common.GroupPrefix+groupID) {
-		return fmt.Errorf("%w: group '%s' already contains group '%s'", ErrCycle, memberID, groupID)
+	children := map[string][]string{}
+	for _, e := range edges {
+		children[e[0]] = append(children[e[0]], e[1])
+	}
+	seen := map[string]bool{memberID: true}
+	queue := []string{memberID}
+	for len(queue) > 0 {
+		id := queue[0]
+		queue = queue[1:]
+		for _, c := range children[id] {
+			if c == groupID {
+				return fmt.Errorf("%w: group '%s' already contains group '%s'", ErrCycle, memberID, groupID)
+			}
+			if !seen[c] {
+				seen[c] = true
+				queue = append(queue, c)
+			}
+		}
 	}
 	return nil
 }
@@ -614,12 +638,7 @@ func (s *Service) History(ctx context.Context, caller Caller, groupToken string,
 func (s *Service) checkManagerToken(ctx context.Context, token string) (string, error) {
 	typ, id, err := parseMemberToken(token)
 	if err != nil {
-		// parseMemberToken does not know relations; a group token with one is checked below.
-		t, raw := common.ParseToken(strings.TrimSpace(token))
-		if t != "group" {
-			return "", err
-		}
-		typ, id = t, common.NormalizeID(raw)
+		return "", err
 	}
 	switch typ {
 	case "user":
@@ -760,6 +779,7 @@ func parseGroupToken(token string) (prefix, id string, err error) {
 	return "", "", fmt.Errorf("%w: got '%s'", ErrInvalidToken, token)
 }
 
+// parseMemberToken splits a member token into type and id, normalized and checked. A group may carry a relation, "group:x#studierende"; "group:x#member" is the plain "x".
 func parseMemberToken(token string) (typ, id string, err error) {
 	token = strings.TrimSpace(token)
 	t, i := common.ParseToken(token)
@@ -769,6 +789,9 @@ func parseMemberToken(token string) (typ, id string, err error) {
 	i = common.NormalizeID(i)
 	if err := common.ValidateMember(t, i); err != nil {
 		return "", "", err
+	}
+	if t == "group" {
+		i = common.JoinGroupRelation(common.MemberGroup(i))
 	}
 	return t, i, nil
 }

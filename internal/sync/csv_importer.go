@@ -134,7 +134,7 @@ func cell(record []string, i int) string {
 }
 
 // resolveMember returns (type, id) from a member string.
-// Accepts "user:email", "group:name", "pattern:<email-glob>", or bare email / group name.
+// Accepts "user:email", "group:name", "group:name#relation", "pattern:<email-glob>", or bare email / group name; a group's relation stays in the id (see common.MemberGroup).
 func resolveMember(member string) (typ, id string) {
 	if strings.HasPrefix(member, common.UserPrefix) {
 		return "user", strings.TrimPrefix(member, common.UserPrefix)

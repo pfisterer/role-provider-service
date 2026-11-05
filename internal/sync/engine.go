@@ -132,8 +132,10 @@ func (e *Engine) RunSync(ctx context.Context, sourceID uuid.UUID, content []byte
 }
 
 // checkRelations refuses the whole import when a tuple names a relation that is
-// not configured: dropping it silently would hand out less access than the
-// source says, with nothing to show why. The sync log records the error.
+// not configured, on the group or on a member group ("group:x#rel"): dropping
+// it silently would hand out less access than the source says, and a member
+// relation nobody holds would grant nothing, with nothing to show why. The sync
+// log records the error.
 func (e *Engine) checkRelations(tuples []common.TuplePair) error {
 	for i := range tuples {
 		rel, err := e.relations.Check(tuples[i].Relation)
@@ -141,6 +143,13 @@ func (e *Engine) checkRelations(tuples []common.TuplePair) error {
 			return &ImportError{fmt.Errorf("group %q: %w", tuples[i].GroupID, err)}
 		}
 		tuples[i].Relation = rel
+		if tuples[i].MemberType == "group" {
+			group, memberRel := common.MemberGroup(tuples[i].MemberID)
+			if memberRel, err = e.relations.Check(memberRel); err != nil {
+				return &ImportError{fmt.Errorf("group %q, member group:%s: %w", tuples[i].GroupID, tuples[i].MemberID, err)}
+			}
+			tuples[i].MemberID = common.JoinGroupRelation(group, memberRel)
+		}
 	}
 	return nil
 }

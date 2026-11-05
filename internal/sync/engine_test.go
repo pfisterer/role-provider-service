@@ -238,3 +238,48 @@ func TestEngine_ReservedNamesAndTheLocalSource(t *testing.T) {
 		t.Errorf("normalized = %v, %v", got, err)
 	}
 }
+
+// A member group may name a relation, "group:kurs#studierende": only the people holding it there are meant. The relation must be configured like the row's own, "#member" is the plain group, and a malformed one refuses the file.
+func TestEngine_MemberGroupRelation(t *testing.T) {
+	ctx := context.Background()
+	store := storage.NewMemoryStore(zap.NewNop().Sugar())
+	relations, err := common.NewRelations([]string{"studierende", "dozierende"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := NewEngine(store, relations, zap.NewNop().Sugar())
+	src := &common.Source{ID: uuid.New(), Name: "dualis", Type: common.SourceTypeCSV}
+	if err := store.CreateSource(ctx, src); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, bad := range []string{"group:kurs#tutor", "group:kurs#", "group:kurs#a b"} {
+		csv := "group,member,relation\nkurs,s@x,studierende\norga," + bad + ",studierende\n"
+		if err := engine.RunSync(ctx, src.ID, []byte(csv)); err == nil {
+			t.Errorf("%s: imported", bad)
+		}
+	}
+
+	csv := "group,member,relation\nkurs,s@x,studierende\nkurs,d@x,dozierende\norga,group:KURS#studierende,studierende\nalle,group:kurs#member,\n"
+	if err := engine.RunSync(ctx, src.ID, []byte(csv)); err != nil {
+		t.Fatal(err)
+	}
+	toks, _ := store.GetUserTokens(ctx, "d@x")
+	if want := []string{"user:d@x", "group:alle", "group:kurs", "group:kurs#dozierende"}; !slices.Equal(sortedCopy(toks), sortedCopy(want)) {
+		t.Errorf("lecturer tokens = %v, want %v", toks, want)
+	}
+	toks, _ = store.GetUserTokens(ctx, "s@x")
+	if !slices.Contains(toks, "group:orga#studierende") || !slices.Contains(toks, "group:alle") {
+		t.Errorf("student tokens = %v", toks)
+	}
+	ms, _ := store.ListMemberships(ctx, "alle")
+	if len(ms) != 1 || ms[0].Member != "group:kurs" {
+		t.Errorf("alle %+v", ms)
+	}
+}
+
+func sortedCopy(in []string) []string {
+	out := slices.Clone(in)
+	slices.Sort(out)
+	return out
+}

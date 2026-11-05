@@ -280,7 +280,7 @@ func manageDeleteGroup(svc *groupmgmt.Service) gin.HandlerFunc {
 // manageAddMember godoc
 //
 //	@Summary		Add an entry
-//	@Description	Adds a person (user:<email>), a group (group:<id>) or a pattern (pattern:*@<domain>) to a group the caller maintains, in a relation (default "member"), optionally until expires_at. Adding an entry that exists sets its expiry. A group that would end up containing itself is refused (409).
+//	@Description	Adds a person (user:<email>), a group (group:<id>: everyone in it; group:<id>#<relation>: only the people holding that relation in it) or a pattern (pattern:*@<domain>) to a group the caller maintains, in a relation (default "member"), optionally until expires_at. Adding an entry that exists sets its expiry. A group that would end up containing itself is refused (409).
 //	@Tags			manage
 //	@Accept			json
 //	@Security		Bearer
@@ -313,7 +313,7 @@ func manageAddMember(svc *groupmgmt.Service) gin.HandlerFunc {
 //	@Tags			manage
 //	@Security		Bearer
 //	@Param			group		path	string	true	"Group id"
-//	@Param			member		query	string	true	"Entry token: user:<email>, group:<id> or pattern:<glob>"
+//	@Param			member		query	string	true	"Entry token: user:<email>, group:<id>, group:<id>#<relation> or pattern:<glob>"
 //	@Param			relation	query	string	false	"Relation"	default(member)
 //	@Success		204			"Removed"
 //	@Failure		403			{object}	map[string]any	"Not maintained by the caller"
@@ -330,7 +330,7 @@ func manageRemoveMember(svc *groupmgmt.Service) gin.HandlerFunc {
 }
 
 type changeRelationRequest struct {
-	// Member is the entry's token: user:<email>, group:<id> or pattern:<glob>.
+	// Member is the entry's token: user:<email>, group:<id>, group:<id>#<relation> or pattern:<glob>.
 	Member string `json:"member" binding:"required"`
 	// Relation is the entry's relation now; empty means "member".
 	Relation string `json:"relation"`

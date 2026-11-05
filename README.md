@@ -28,12 +28,7 @@ A **Zanzibar-style tuple store** with a small HTTP API:
   nest, and membership resolves transitively), or **patterns**
   (`*@student.example.edu`), which is how "all students" stays a rule instead of
   50 000 rows.
-- **Relations** say what a member is in a group, beyond being in it: a course
-  `wwi23seb` can have a `dozent` and `studierende`. The relations are configured
-  (`GROUP_RELATIONS`), every one implies membership, and a user holding one gets
-  `group:wwi23seb#dozent` in addition to `group:wwi23seb` — so a rule on the
-  plain group token keeps meaning "everyone in the course". A group as member of
-  `wwi23seb#studierende` gives the relation to all of that group's members.
+- **Relations** say what a member is in a group, beyond being in it: a course `wwi23seb` can have a `dozent` and `studierende`. The relations are configured (`GROUP_RELATIONS`), every one implies membership, and a user holding one gets `group:wwi23seb#dozent` in addition to `group:wwi23seb` — so a rule on the plain group token keeps meaning "everyone in the course". A group as member of `wwi23seb#studierende` gives the relation to all of that group's members. A group entered with a relation, `group:wwi23seb-kurs#studierende`, gives it only to the people holding that relation there, through its sub-groups too — so lecturers of a course do not become students of the study programme the course is nested in. A plain `group:wwi23seb-kurs` keeps meaning everyone in it, whatever their relation.
 - **Token resolution** is the primary query: given an address, return every token
   that person holds — direct, inherited through nesting, and matched by pattern.
   That single list is what a consuming service checks its rules against.
@@ -66,7 +61,7 @@ Group search is answered from an in-memory snapshot of the group catalog, reload
 
 ## Import formats
 
-A **CSV** source has one membership per row: `group,member[,description]`. If the first row's first column is `group` or `group_id`, it is a header: it names the columns (`group`, `member`, `description`, `relation`, and `name`/`note` for text the import ignores; any other name is an error) and is skipped. A byte-order mark in front of it, as Excel writes one, is ignored. A `relation` column gives each row's relation; rows without one, and files without the column, are plain memberships. A relation that is not configured fails the whole sync, with the reason in the sync log; lines starting with `#` are comments, rows with fewer than two columns are ignored, and a `group:` prefix in the first column is dropped. The member is `user:<email>`, `group:<name>` or `pattern:<glob>` (`*` matches any run of characters, case-insensitive); a bare value counts as a user if it contains `@` and as a group otherwise. The optional description belongs to the group, so the last non-empty one wins.
+A **CSV** source has one membership per row: `group,member[,description]`. If the first row's first column is `group` or `group_id`, it is a header: it names the columns (`group`, `member`, `description`, `relation`, and `name`/`note` for text the import ignores; any other name is an error) and is skipped. A byte-order mark in front of it, as Excel writes one, is ignored. A `relation` column gives each row's relation; rows without one, and files without the column, are plain memberships. A relation that is not configured fails the whole sync, with the reason in the sync log; lines starting with `#` are comments, rows with fewer than two columns are ignored, and a `group:` prefix in the first column is dropped. The member is `user:<email>`, `group:<name>`, `group:<name>#<relation>` or `pattern:<glob>` (`*` matches any run of characters, case-insensitive); a bare value counts as a user if it contains `@` and as a group otherwise. A group member with a relation stands for the people holding that relation in the group, not for everyone in it; the relation must be configured like the one in the `relation` column, and `#member` is the plain group. The optional description belongs to the group, so the last non-empty one wins.
 
 ```csv
 group,member,description,relation
@@ -75,6 +70,8 @@ dept_cs_admin,group:dept_cs_faculty,,
 students,pattern:*@student.example.edu,All students,
 wwi23seb,bob@example.edu,Course WWI23SEB,dozent
 wwi23seb,group:wwi23seb-kurs,,studierende
+wi-programme,group:wwi23seb#studierende,,studierende
+wi-programme,group:wwi23seb#dozent,,dozent
 ```
 
 An **LDIF** source reads entries whose `objectClass` is `groupOfNames`, `groupOfUniqueNames`, `posixGroup` or `group`. The group name is the first `cn` of the entry's DN, its `description` attribute becomes the group description, and each `member`/`uniqueMember` DN is turned into an address by the source's `dn_email_regexp` (required, first capture group, e.g. `mail=([^,]+)`). DNs the expression does not match are skipped. An optional `group_relation_regexp` turns LDAP groups into relations of another group: it is matched against the CN, and its named captures `group` and `relation` give the target — `^(?P<group>.+)-(?P<relation>dozent)$` makes `cn=wwi23seb-dozent` the `dozent` relation of `wwi23seb`. A CN it does not match stays a plain group, and a relation group's description is not applied to the target group.

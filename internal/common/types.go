@@ -141,8 +141,9 @@ type Change struct {
 type TuplePair struct {
 	GroupID    string // raw group name, no "group:" prefix
 	Relation   string // "member" or one of the configured relations; "" means "member"
-	MemberType string // "user" or "group"
-	MemberID   string // email or group name, no prefix
+	MemberType string // "user", "group" or "pattern"
+	// MemberID is the email, pattern or group, no prefix. A group may carry a relation as in a token, "wwi23seb#studierende": only the people holding that relation there are meant (see MemberGroup).
+	MemberID string
 }
 
 // NormalizeID is the one spelling of an id stored and looked up here — an
@@ -185,13 +186,24 @@ func SplitGroupRelation(id string) (group, relation string) {
 	return id, RelationMember
 }
 
+// JoinGroupRelation is the inverse of SplitGroupRelation: "wwi23seb", "dozent" → "wwi23seb#dozent"; membership has no suffix, "wwi23seb", "member" → "wwi23seb".
+func JoinGroupRelation(group, relation string) string {
+	if relation == "" || relation == RelationMember {
+		return group
+	}
+	return group + RelationSeparator + relation
+}
+
+// MemberGroup splits a group entered as a member into the group and whom of it the entry means. "wwi23seb#studierende" means the people holding studierende in wwi23seb, through its sub-groups too; a plain "wwi23seb" (or "wwi23seb#member") means everyone in it, whatever their relation — what a group as member has always meant, so a nested group keeps handing on all of its people.
+func MemberGroup(id string) (group, relation string) {
+	group, relation = SplitGroupRelation(id)
+	return group, NormalizeRelation(relation)
+}
+
 // GroupToken builds the token for a relation on a group. Membership is the
 // plain "group:<id>", so a consumer that only knows groups sees no change.
 func GroupToken(groupID, relation string) string {
-	if relation == "" || relation == RelationMember {
-		return GroupPrefix + groupID
-	}
-	return GroupPrefix + groupID + RelationSeparator + relation
+	return GroupPrefix + JoinGroupRelation(groupID, relation)
 }
 
 // NormalizeRelation maps the empty relation to "member".

@@ -65,13 +65,20 @@ func ValidatePattern(pattern string) error {
 	return fmt.Errorf("%w: pattern %q must be \"*@<domain>\" or a literal e-mail address", ErrInvalidID, pattern)
 }
 
-// ValidateMember checks a member id of the given type ("user", "group" or "pattern"), already normalized.
+// ValidateMember checks a member id of the given type ("user", "group" or "pattern"), already normalized. A group may carry a relation, "wwi23seb#studierende" (see MemberGroup); whether the relation is configured is for the caller to check.
 func ValidateMember(memberType, id string) error {
 	switch memberType {
 	case "user":
 		return ValidateEmail(id)
 	case "group":
-		return ValidateGroupID(id)
+		group, relation, hasRelation := strings.Cut(id, RelationSeparator)
+		if err := ValidateGroupID(group); err != nil {
+			return err
+		}
+		if hasRelation && !relationName.MatchString(relation) {
+			return fmt.Errorf("%w: relation %q of member group %q must be lowercase letters, digits, '-' and '_', starting with a letter", ErrInvalidID, relation, group)
+		}
+		return nil
 	case "pattern":
 		return ValidatePattern(id)
 	default:
