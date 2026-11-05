@@ -1,7 +1,7 @@
 ## Stage 1: Builder image
 # The build stage runs on the machine that builds (BUILDPLATFORM) and cross-compiles for the target: on an arm64 Mac that is native speed instead of emulation. No cgo is needed, so the binary is static.
 # Base images are pinned by tag and digest: a floating tag would put whatever was published that day into a release. Bump both lines on purpose.
-FROM --platform=$BUILDPLATFORM golang:1.27.2-alpine3.24@sha256:f92b6ef800e499660581efdabdf25d9d817a9d124eaf900924f0504e7e27e12d AS builder
+FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine3.24@sha256:d200d2dd76b03a99b52651fd1325aff7dcd35422c35c01bac56571b0507f3deb AS builder
 ARG TARGETOS TARGETARCH
 
 RUN apk add --no-cache git make build-base
