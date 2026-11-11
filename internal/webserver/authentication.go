@@ -1,13 +1,13 @@
 package webserver
 
 import (
-	"crypto/subtle"
 	"fmt"
 	"net/http"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/pfisterer/cloud-self-service-golib/authn"
 	"github.com/pfisterer/role-provider-service/internal/storage"
 	"go.uber.org/zap"
 )
@@ -35,9 +35,6 @@ type SourceUploadToken struct {
 //
 // An upload token (SourceUploadToken) opens exactly the upload route, and requireWriteOrOwnSource narrows that to its own source. Everything else, reads included, is refused: such a token sits on a sync server outside the cluster, and losing it must neither reveal the graph nor reach beyond the one source it feeds.
 func BearerAuthMiddleware(readTokens, writeTokens []string, uploadTokens []SourceUploadToken, log *zap.SugaredLogger) gin.HandlerFunc {
-	readSet := newTokenSet(readTokens)
-	writeSet := newTokenSet(writeTokens)
-
 	return func(c *gin.Context) {
 		auth := c.GetHeader("Authorization")
 		if auth == "" {
@@ -51,8 +48,8 @@ func BearerAuthMiddleware(readTokens, writeTokens []string, uploadTokens []Sourc
 			token = strings.TrimSpace(token[7:])
 		}
 
-		canWrite := setContains(writeSet, token)
-		if !canWrite && !setContains(readSet, token) {
+		canWrite := setContains(writeTokens, token)
+		if !canWrite && !setContains(readTokens, token) {
 			if source, ok := uploadSourceFor(uploadTokens, token); ok {
 				if c.Request.Method != http.MethodPost || c.FullPath() != uploadRoute {
 					log.Warnw("rejected request with an upload token outside its upload", "remote_addr", c.ClientIP(), "path", c.Request.URL.Path, "source", source)
@@ -109,33 +106,20 @@ func requireWriteOrOwnSource(store storage.Store, log *zap.SugaredLogger) gin.Ha
 
 // uploadSourceFor compares against every upload token in constant time, like setContains.
 func uploadSourceFor(tokens []SourceUploadToken, token string) (string, bool) {
-	candidate := []byte(token)
 	source, found := "", false
 	for _, t := range tokens {
-		if t.Token != "" && subtle.ConstantTimeCompare([]byte(t.Token), candidate) == 1 {
+		if authn.SecretEqual(token, t.Token) {
 			source, found = t.Source, true
 		}
 	}
 	return source, found
 }
 
-func newTokenSet(tokens []string) [][]byte {
-	set := make([][]byte, 0, len(tokens))
-	for _, t := range tokens {
-		if t != "" {
-			set = append(set, []byte(t))
-		}
-	}
-	return set
-}
-
-// setContains compares in constant time per candidate, so the comparison cannot
-// leak how much of a guessed token was correct.
-func setContains(set [][]byte, token string) bool {
-	candidate := []byte(token)
+// setContains compares with every configured token in constant time (golib's authn.SecretEqual) and without stopping at a match, so the comparison cannot leak how much of a guessed token was correct or which entry matched. An empty configured token never matches.
+func setContains(set []string, token string) bool {
 	match := false
 	for _, t := range set {
-		if subtle.ConstantTimeCompare(t, candidate) == 1 {
+		if authn.SecretEqual(token, t) {
 			match = true
 		}
 	}

@@ -10,7 +10,7 @@ require (
 	github.com/go-ldap/ldif v0.0.0-20260814080914-716cb106d6e4
 	github.com/google/uuid v1.6.0
 	github.com/joho/godotenv v1.5.1
-	github.com/pfisterer/cloud-self-service-golib v0.12.0
+	github.com/pfisterer/cloud-self-service-golib v0.19.0
 	github.com/robfig/cron/v3 v3.0.1
 	go.uber.org/zap v1.28.0
 	gorm.io/driver/postgres v1.6.2
