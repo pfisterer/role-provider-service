@@ -2,7 +2,7 @@ module github.com/pfisterer/role-provider-service
 
 go 1.26.0
 
-toolchain go1.27.3
+toolchain go1.27.4
 
 require (
 	github.com/gin-contrib/zap v1.1.7
