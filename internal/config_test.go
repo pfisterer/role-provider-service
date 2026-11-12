@@ -42,3 +42,26 @@ func TestSourceUploadTokens(t *testing.T) {
 		}
 	}
 }
+
+// The dev sign-in only exists in development mode and never next to a real identity provider; anything else refuses to start instead of ignoring the variable.
+func TestDevAuthUser(t *testing.T) {
+	t.Setenv("API_TOKENS", "read-token")
+	t.Setenv("DEV_AUTH_USER", " Root.Admin@uni.example ")
+
+	t.Setenv("API_MODE", "production")
+	if _, err := loadAppConfiguration(); err == nil || !strings.Contains(err.Error(), "DEV_AUTH_USER") {
+		t.Errorf("production: got %v", err)
+	}
+
+	t.Setenv("API_MODE", "development")
+	cfg, err := loadAppConfiguration()
+	if err != nil || cfg.DevAuthUser != "root.admin@uni.example" {
+		t.Errorf("development: %q %v", cfg.DevAuthUser, err)
+	}
+
+	t.Setenv("OIDC_ISSUER_URL", "https://sso.example/realms/main")
+	t.Setenv("OIDC_CLIENT_ID", "ui")
+	if _, err := loadAppConfiguration(); err == nil || !strings.Contains(err.Error(), "DEV_AUTH_USER") {
+		t.Errorf("with OIDC: got %v", err)
+	}
+}

@@ -37,8 +37,10 @@ type SetupConfig struct {
 	CORSAllowedOrigins []string
 	// TrustedProxies are the addresses or CIDRs of reverse proxies whose X-Forwarded-For is believed. Empty trusts none, so the client IP in the logs is the peer's address and cannot be set by the client.
 	TrustedProxies []string
-	// Verifier checks the ID tokens of people signed in at the self-service UI. Nil leaves /v1/manage out entirely.
+	// Verifier checks the ID tokens of people signed in at the self-service UI. Nil (and no DevAuthUser) leaves /v1/manage out entirely.
 	Verifier TokenVerifier
+	// DevAuthUser is the development sign-in for /v1/manage: every request without an Authorization header is this person. Only with DevMode and without a Verifier; SetupRouter refuses anything else, so a production configuration can never reach it.
+	DevAuthUser string
 	// AdminTokens maintain every local group and may act on behalf of another person (e.g. group:root-admin).
 	AdminTokens []string
 	// LocalSourceName is the name of the local source, shown next to its groups.
@@ -80,11 +82,15 @@ func SetupRouter(cfg SetupConfig) (*gin.Engine, error) {
 	})
 
 	// People maintaining groups, through the self-service UI: an ID token instead of an API token, and nothing but /v1/manage. Registered as a group of its own, so the API-token middleware below never sees these requests and the person middleware never sees the others.
-	if cfg.Verifier != nil {
+	identify, err := manageIdentity(cfg)
+	if err != nil {
+		return nil, err
+	}
+	if identify != nil {
 		manage := router.Group("/v1/manage")
 		// No CORS here: the UI calls through its own proxy, same-origin. What stays necessary is refusing writes a page from elsewhere makes the browser send — the proxy turns the session cookie into the bearer this route accepts.
 		manage.Use(ginweb.RejectCrossOriginWrites(ginweb.CrossOriginOptions{DevMode: cfg.DevMode, Log: cfg.Log}))
-		manage.Use(limitRequestBody(), personAuthMiddleware(cfg.Verifier, cfg.GroupSvc, cfg.AdminTokens, cfg.Log))
+		manage.Use(limitRequestBody(), personAuthMiddleware(identify, cfg.GroupSvc, cfg.AdminTokens, cfg.Log))
 		if cfg.DevMode {
 			manage.Use(debugLoggingMiddleware(cfg.Log))
 		} else {
@@ -123,6 +129,23 @@ func SetupRouter(cfg SetupConfig) (*gin.Engine, error) {
 	registerAdminRoutes(apiGroup, cfg.Store)
 
 	return router, nil
+}
+
+// manageIdentity decides how /v1/manage tells who a request comes from: the ID token, or in development the dev user. Nil leaves /v1/manage out. The dev sign-in needs development mode and excludes OIDC: with an identity provider configured the deployment is a real one, and a request without a bearer silently becoming somebody there is exactly what must never happen.
+func manageIdentity(cfg SetupConfig) (identifyFunc, error) {
+	devUser := strings.ToLower(strings.TrimSpace(cfg.DevAuthUser))
+	switch {
+	case devUser == "" && cfg.Verifier == nil:
+		return nil, nil
+	case devUser == "":
+		return oidcIdentity(cfg.Verifier, cfg.Log), nil
+	case !cfg.DevMode:
+		return nil, fmt.Errorf("DEV_AUTH_USER is only allowed in development mode (API_MODE=development)")
+	case cfg.Verifier != nil:
+		return nil, fmt.Errorf("DEV_AUTH_USER and OIDC exclude each other: set one of them")
+	}
+	cfg.Log.Warnw("DEVELOPMENT SIGN-IN ACTIVE: every /v1/manage request without an Authorization header is this person, nothing is verified — never run this way anywhere but locally", "dev_auth_user", devUser)
+	return devIdentity(devUser), nil
 }
 
 // indexHTML is a plain landing page. It deliberately embeds NO third-party

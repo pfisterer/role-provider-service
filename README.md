@@ -55,7 +55,7 @@ Most groups are not delivered ready-made by any directory: courses, study progra
 - **History**: every change records who made it, for whom an admin acted, and what changed. Changes made by sync sources are in their sync log instead.
 - **Taking over a source**: `ADOPT_SOURCES` names CSV/LDIF sources whose groups and memberships pass to the local source at startup, after which the source is deleted — how a CSV maintained by hand becomes groups maintained in the UI, without a moment in which a group is empty. Groups of no source (created through the API before the local source existed, or left by a deleted source) pass to it as well. Both are no-ops once done.
 
-People maintain their groups in the self-service UI, which reaches this service through its own proxy under `/v1/manage`. That part accepts only an ID token of the UI's identity provider (`OIDC_*`), never an API token, and the rest of `/v1` accepts no ID token: a person can maintain the groups they manage and nothing else — resolving anybody's tokens or reading any group's members stays with the services. An admin may act on behalf of another person with `X-Act-As`, as in the other services, and then sees and does what that person would; the history records both. Writes a page from another origin makes the browser send are refused.
+People maintain their groups in the self-service UI, which reaches this service through its own proxy under `/v1/manage`. That part accepts only an ID token of the UI's identity provider (`OIDC_*`) — locally the development sign-in instead (`DEV_AUTH_USER`, see Running it locally) —, never an API token, and the rest of `/v1` accepts no ID token: a person can maintain the groups they manage and nothing else — resolving anybody's tokens or reading any group's members stays with the services. An admin may act on behalf of another person with `X-Act-As`, as in the other services, and then sees and does what that person would; the history records both. Writes a page from another origin makes the browser send are refused.
 
 Group search is answered from an in-memory snapshot of the group catalog, reloaded on startup, after every sync and after every group edit, with `GROUP_CACHE_REFRESH_SECONDS` only as a backstop — so a type-ahead never costs a database round-trip. Token resolution queries the store directly (a recursive query on Postgres), so a membership change counts on the next request.
 
@@ -130,7 +130,14 @@ make test
 
 The service refuses to start without `API_TOKENS`. Configuration comes from the environment and from a `.env` file in the working directory, whose values override variables already set.
 
-With `DB_TYPE=memory` and `DB_ADD_MOCK_DATA=true` the service starts with a small set of example groups and identities — the same ones the openstack-management-api mock data uses — enough to develop a consumer against without a database or a directory export.
+With `DB_TYPE=memory` and `DB_ADD_MOCK_DATA=true` the service starts with a small set of example groups and identities — the same ones the openstack-management-api mock data uses — enough to develop a consumer against without a database or a directory export. For the group pages of the self-service UI the mock data also has local groups that `root.admin@uni.example` maintains (`cloud_lab` with nested `cloud_lab_tutors`, a pattern, a running and an expired membership; `cloud_lab_leads`, `thesis_2026`), one that `faculty@cs.example` maintains through `dept_cs_faculty` (`cs_seminar`), and two read-only sync sources with nested groups (`Dualis`, CSV: `wwi` → `wwi24sea`, `wwi24seb`; `LDAP`, LDIF: `staff` → `staff-cs`, `staff-bio`).
+
+Locally there is no identity provider, so `/v1/manage` has a development sign-in like dynamic-zones-api and openstack-management-api: with `API_MODE=development` and `DEV_AUTH_USER` set, every `/v1/manage` request without an `Authorization` header is that person, resolved like a verified sign-in (`ADMIN_TOKENS`, `X-Act-As`); a request with a bearer is refused, the rest of `/v1` still wants an API token. The service refuses to start with `DEV_AUTH_USER` outside development mode or together with `OIDC_ISSUER_URL`, and logs a warning at startup while the dev sign-in is on. For the UI's group pages:
+
+```sh
+API_MODE=development DB_TYPE=memory DB_ADD_MOCK_DATA=true API_TOKENS=dev-read \
+DEV_AUTH_USER=root.admin@uni.example ADMIN_TOKENS=group:root_uni GROUP_RELATIONS=dozent,studierende go run ./cmd
+```
 
 ## Configuration
 
@@ -156,6 +163,7 @@ With `DB_TYPE=memory` and `DB_ADD_MOCK_DATA=true` the service starts with a smal
 | `ADMIN_TOKENS` | *(empty)* | Tokens that maintain every local group, create and delete groups, and may act on behalf of another person (e.g. `group:root-admin`) |
 | `OIDC_ISSUER_URL` / `OIDC_CLIENT_ID` | *(empty)* | Identity provider and audience of the ID tokens `/v1/manage` accepts; empty leaves `/v1/manage` out |
 | `OIDC_JWKS_URL` | *(empty)* | The provider's key set; set, nothing is fetched at startup |
+| `DEV_AUTH_USER` | *(empty)* | Development sign-in for `/v1/manage`: a request without a bearer is this person. Only with `API_MODE=development` and without `OIDC_ISSUER_URL`, otherwise the service refuses to start |
 | `MAX_RESPONSE_LIMIT` | `50` | Cap on results per group or user search |
 | `SERVICE_TIMEOUT_SECONDS` | `30` | Per-request timeout |
 

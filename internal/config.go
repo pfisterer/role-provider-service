@@ -62,6 +62,8 @@ type AppConfiguration struct {
 	OIDC OIDCConfig `json:"oidc"`
 	// AdminTokens maintain every local group, create and delete groups, and may act on behalf of another person (e.g. group:root-admin).
 	AdminTokens []string `json:"admin_tokens"`
+	// DevAuthUser is the development sign-in for /v1/manage (DEV_AUTH_USER): a request without an Authorization header is this person, other people are reached with X-Act-As as in production. Only with API_MODE=development and without OIDC; anything else refuses to start.
+	DevAuthUser string `json:"dev_auth_user,omitempty"`
 }
 
 // OIDCConfig is the identity provider whose ID tokens /v1/manage accepts — the one the self-service UI signs people in with.
@@ -129,6 +131,7 @@ func loadAppConfiguration() (AppConfiguration, error) {
 			JWKSURL:   envconf.String("OIDC_JWKS_URL", ""),
 		},
 		AdminTokens: envconf.StringSlice("ADMIN_TOKENS", nil),
+		DevAuthUser: common.NormalizeID(envconf.String("DEV_AUTH_USER", "")),
 	}
 	uploadTokens, err := parseSourceUploadTokens(envconf.StringSlice("SOURCE_UPLOAD_TOKENS", nil), cfg.APITokens, cfg.APIWriteTokens)
 	if err != nil {
@@ -144,6 +147,13 @@ func loadAppConfiguration() (AppConfiguration, error) {
 	}
 	if cfg.OIDC.IssuerURL != "" && cfg.OIDC.ClientID == "" {
 		return AppConfiguration{}, fmt.Errorf("OIDC_CLIENT_ID must be set with OIDC_ISSUER_URL")
+	}
+	// Refused rather than ignored: a dev sign-in in a real deployment would make every request without a bearer a person, and quietly ignoring the variable would hide that somebody tried.
+	if cfg.DevAuthUser != "" && !cfg.DevMode {
+		return AppConfiguration{}, fmt.Errorf("DEV_AUTH_USER is only allowed with API_MODE=development")
+	}
+	if cfg.DevAuthUser != "" && cfg.OIDC.IssuerURL != "" {
+		return AppConfiguration{}, fmt.Errorf("DEV_AUTH_USER and OIDC_ISSUER_URL exclude each other: the dev sign-in is for running locally without an identity provider")
 	}
 	for i, t := range cfg.AdminTokens {
 		// Compared with resolved tokens, which are lowercase.

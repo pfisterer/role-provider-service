@@ -170,6 +170,7 @@ func RunApplication() {
 		TrustedProxies:     cfg.TrustedProxies,
 		Verifier:           verifier,
 		AdminTokens:        cfg.AdminTokens,
+		DevAuthUser:        cfg.DevAuthUser,
 		LocalSourceName:    cfg.LocalSourceName,
 	})
 	if err != nil {
