@@ -10,6 +10,9 @@ EMBED_FILE   := $(DOC_DIR)/embedded.go
 OPENAPI_JSON := $(DOC_DIR)/openapi3.json
 CLIENT_DIR   := $(DOC_DIR)/client-typescript
 CLIENT_PKG_DIR := ./client-npm
+GO_CLIENT_DIR  := ./client
+# The generator for the Go client, pinned: its version is written into client.gen.go's header, so an unpinned one would make the staleness check in CI fail on every upstream release.
+OAPI_CODEGEN_VERSION := v2.6.0
 NPM_PKG_NAME := @dhbw-cloud/role-provider-client
 
 # Docker image details
@@ -21,7 +24,7 @@ DOCKER_PLATFORMS ?= linux/amd64,linux/arm64
 
 .PHONY: publish all build clean doc check-swag generate-docs run dev test tidy lint help \
         docker-build docker-run docker-multi-arch-build helm-update bump version-check \
-        install-npm client npm-package npm-pack npm-publish
+        install-npm client ts-client npm-package npm-pack npm-publish
 
 all: generate-docs build
 
@@ -60,7 +63,7 @@ doc: generate-docs
 install-npm:
 	@npm install --silent
 
-client: generate-docs install-npm
+ts-client: generate-docs install-npm
 	@echo "🔁 Converting Swagger 2 → OpenAPI 3..."
 	@npx swagger2openapi $(SWAGGER_JSON) --outfile $(OPENAPI_JSON) --yaml=false --patch --warnOnly
 	@echo "📦 Generating TypeScript client..."
@@ -69,7 +72,7 @@ client: generate-docs install-npm
 	@rm -f $(OPENAPI_JSON)
 	@echo "✅ TS client generated in $(CLIENT_DIR)"
 
-npm-package: client
+npm-package: ts-client
 	@echo "📦 Assembling $(NPM_PKG_NAME)..."
 	@rm -rf $(CLIENT_PKG_DIR)
 	@mkdir -p $(CLIENT_PKG_DIR)/src
@@ -114,6 +117,18 @@ npm-publish: npm-package
 	esac; \
 	echo "📤 Publishing $(NPM_PKG_NAME)@$$VERSION (dist-tag: $$TAG)"; \
 	cd $(CLIENT_PKG_DIR) && npm publish --tag "$$TAG"
+
+# ── Go client ─────────────────────────────────────────────────────────────────
+# openstack-management-api and aiaas-management-api call this service through this client, taken as the Go module github.com/pfisterer/role-provider-service/client at a client/vX.Y.Z tag. It used to be generated in each of them from a released swagger.json, and the copies drifted apart. client.gen.go is committed (a Go module is consumed from the repository as it is), and CI fails when it no longer matches the spec. `go run pkg@version` rather than a binary on PATH, so a machine with some other oapi-codegen installed still generates the same file.
+
+client: generate-docs install-npm
+	@echo "🔁 Converting Swagger 2 → OpenAPI 3..."
+	@npx swagger2openapi $(SWAGGER_JSON) --outfile $(OPENAPI_JSON) --yaml=false --patch --warnOnly
+	@echo "📦 Generating Go client ($(OAPI_CODEGEN_VERSION))..."
+	@go run github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@$(OAPI_CODEGEN_VERSION) -config $(GO_CLIENT_DIR)/oapi-codegen.yaml $(OPENAPI_JSON)
+	@rm -f $(OPENAPI_JSON)
+	@cd $(GO_CLIENT_DIR) && go mod tidy
+	@echo "✅ Go client generated in $(GO_CLIENT_DIR)/client.gen.go"
 
 # ── Build ─────────────────────────────────────────────────────────────────────
 
@@ -227,6 +242,8 @@ help:
 	@echo "  all              → Generate docs and build binary (default)"
 	@echo "  generate-docs    → Run swag to regenerate swagger.json + embedded.go"
 	@echo "  doc              → Alias for generate-docs"
+	@echo "  client           → Regenerate the Go client module in client/ from the spec"
+	@echo "  ts-client        → Generate the TypeScript client (input of npm-package)"
 	@echo "  build            → Compile Go binary"
 	@echo "  run              → Build and run"
 	@echo "  dev              → Live-reload dev server (requires air)"

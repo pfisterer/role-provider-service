@@ -46,3 +46,55 @@ jobs:
       - name: govulncheck
         if: '!cancelled()'
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+
+  # The Go client module in client/ (github.com/pfisterer/role-provider-service/client), held against the spec this commit generates. client.gen.go is committed because consumers take the module straight from a client/vX.Y.Z tag, so an API change without `make client` would tag a client that describes the previous API: it compiles in the consumers and turns into a 404 or a silently dropped field at runtime. Own job because it needs Node (swagger2openapi), which the checks job deliberately has none of.
+  go-client:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: client/go.mod
+          cache: true
+          cache-dependency-path: |
+            go.sum
+            client/go.sum
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Regenerate the Go client
+        run: make client
+
+      # On client/ by path, not on the whole tree: `npm install` in that target may touch package-lock.json, which is not what this job is asking about.
+      - name: It matches what is committed
+        run: |
+          set -euo pipefail
+          git diff --exit-code -- client/ || {
+            echo "::error::client/ does not match the API this commit describes."
+            echo "Run 'make client' and commit the result."
+            exit 1
+          }
+          untracked=$(git ls-files --others --exclude-standard -- client/)
+          if [ -n "$untracked" ]; then
+            echo "::error::make client created files that are not committed: $untracked"
+            exit 1
+          fi
+
+      # The module is built, vetted and scanned on its own: the root module's ./... stops at client/go.mod.
+      - name: Build, vet, test and govulncheck the client module
+        working-directory: client
+        run: |
+          set -euo pipefail
+          go build ./...
+          go vet ./...
+          go test ./...
+          go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...

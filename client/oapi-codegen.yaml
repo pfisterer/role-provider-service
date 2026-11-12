@@ -1,0 +1,7 @@
+# Same generator options openstack-management-api and aiaas-management-api used for their own copies, so moving them onto this module changes nothing but the import path.
+package: roleclient
+generate:
+  - types
+  - client
+# Relative to the repository root, where `make client` runs the generator.
+output: client/client.gen.go
