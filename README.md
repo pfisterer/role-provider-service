@@ -55,7 +55,7 @@ Most groups are not delivered ready-made by any directory: courses, study progra
 - **History**: every change records who made it, for whom an admin acted, and what changed. Changes made by sync sources are in their sync log instead.
 - **Taking over a source**: `ADOPT_SOURCES` names CSV/LDIF sources whose groups and memberships pass to the local source at startup, after which the source is deleted — how a CSV maintained by hand becomes groups maintained in the UI, without a moment in which a group is empty. Groups of no source (created through the API before the local source existed, or left by a deleted source) pass to it as well. Both are no-ops once done.
 
-People maintain their groups in the self-service UI, which reaches this service through its own proxy under `/v1/manage`. That part accepts only an ID token of the UI's identity provider (`OIDC_*`) — locally the development sign-in instead (`DEV_AUTH_USER`, see Running it locally) —, never an API token, and the rest of `/v1` accepts no ID token: a person can maintain the groups they manage and nothing else — resolving anybody's tokens or reading any group's members stays with the services. An admin may act on behalf of another person with `X-Act-As`, as in the other services, and then sees and does what that person would; the history records both. Writes a page from another origin makes the browser send are refused.
+People maintain their groups in the self-service UI, which reaches this service through its own proxy under `/v1/manage`. That part accepts only an ID token of the UI's identity provider (`OIDC_*`) — locally the development sign-in instead (`DEV_AUTH_USER`, see Running it locally) —, never an API token, and the rest of `/v1` accepts no ID token: a person can maintain the groups they manage and nothing else — resolving anybody's tokens or reading any group's members stays with the services. A group's detail (`GET /v1/manage/groups/{group}`) lists its direct entries and its managers, both as empty lists rather than `null` when there are none, as for every group of a sync source. An admin may act on behalf of another person with `X-Act-As`, as in the other services, and then sees and does what that person would; the history records both. Writes a page from another origin makes the browser send are refused.
 
 Group search is answered from an in-memory snapshot of the group catalog, reloaded on startup, after every sync and after every group edit, with `GROUP_CACHE_REFRESH_SECONDS` only as a backstop — so a type-ahead never costs a database round-trip. Token resolution queries the store directly (a recursive query on Postgres), so a membership change counts on the next request.
 
@@ -97,9 +97,7 @@ Keycloak creates a user at their first sign-in, and that sign-in asks for their 
 
 ## API
 
-Everything is served under `/v1`, and the service publishes its own OpenAPI
-description at **`GET /swagger.json`** — that spec is the reference, so it cannot
-drift from the implementation the way a hand-written endpoint list does.
+Everything is served under `/v1`, and the service publishes its own OpenAPI description at **`GET /swagger.json`** — that spec is the reference, so it cannot drift from the implementation the way a hand-written endpoint list does.
 
 Five groups of operations exist: resolving a person's tokens (the query consumers actually run), searching people and groups, editing groups and their members, managing sync sources (`/v1/sync/sources`) including upload, trigger and log, and `/v1/manage` for people maintaining groups (see above). Next to them, `/v1/admin/health` and `/v1/admin/stats` report liveness and, on Postgres, the number of groups, tuples and sources. Every stable GitHub release carries its `swagger.json` as an asset. The self-service UI uses the TypeScript client `@dhbw-cloud/role-provider-client`, built with `make npm-package` and published with `make npm-publish` (a `-test.N` version goes to the `next` dist-tag).
 
@@ -119,7 +117,7 @@ Authentication is by bearer token on everything under `/v1` (only `/` and `/swag
 
 ## Running it locally
 
-**Prerequisites:** Go 1.25+, optionally [air](https://github.com/air-verse/air) for live reload. `make generate-docs` installs [swag](https://github.com/swaggo/swag) if it is missing.
+**Prerequisites:** Go 1.26+ (`go.mod` names the toolchain go1.27.4, which the `go` command fetches), optionally [air](https://github.com/air-verse/air) for live reload. `make generate-docs` installs [swag](https://github.com/swaggo/swag) if it is missing.
 
 ```bash
 make all     # docs + binary — run once after cloning, the embedded docs are generated
@@ -128,16 +126,18 @@ make run     # build + run once
 make test
 ```
 
-The service refuses to start without `API_TOKENS`. Configuration comes from the environment and from a `.env` file in the working directory, whose values override variables already set.
+The service refuses to start without `API_TOKENS`. Configuration comes from the environment and from a `.env` file in the working directory (git-ignored), whose values override variables already set — so a local `.env` with `API_TOKENS` is enough to start it.
 
 With `DB_TYPE=memory` and `DB_ADD_MOCK_DATA=true` the service starts with a small set of example groups and identities — the same ones the openstack-management-api mock data uses — enough to develop a consumer against without a database or a directory export. For the group pages of the self-service UI the mock data also has local groups that `root.admin@uni.example` maintains (`cloud_lab` with nested `cloud_lab_tutors`, a pattern, a running and an expired membership; `cloud_lab_leads`, `thesis_2026`), one that `faculty@cs.example` maintains through `dept_cs_faculty` (`cs_seminar`), and two read-only sync sources with nested groups (`Dualis`, CSV: `wwi` → `wwi24sea`, `wwi24seb`; `LDAP`, LDIF: `staff` → `staff-cs`, `staff-bio`).
 
-Locally there is no identity provider, so `/v1/manage` has a development sign-in like dynamic-zones-api and openstack-management-api: with `API_MODE=development` and `DEV_AUTH_USER` set, every `/v1/manage` request without an `Authorization` header is that person, resolved like a verified sign-in (`ADMIN_TOKENS`, `X-Act-As`); a request with a bearer is refused, the rest of `/v1` still wants an API token. The service refuses to start with `DEV_AUTH_USER` outside development mode or together with `OIDC_ISSUER_URL`, and logs a warning at startup while the dev sign-in is on. For the UI's group pages:
+Locally there is no identity provider, so `/v1/manage` has a development sign-in like dynamic-zones-api and openstack-management-api: with `API_MODE=development` and `DEV_AUTH_USER` set, every `/v1/manage` request without an `Authorization` header is that person, resolved like a verified sign-in (`ADMIN_TOKENS`, `X-Act-As`); a request with a bearer is refused, the rest of `/v1` still wants an API token. The service refuses to start with `DEV_AUTH_USER` outside development mode or together with `OIDC_ISSUER_URL`, and logs a warning at startup while the dev sign-in is on. For the UI's group pages, as the local development environment of all services starts it on :8085 (`API_TOKENS` comes from `.env` there; without one, add e.g. `API_TOKENS=dev-read`):
 
 ```sh
-API_MODE=development DB_TYPE=memory DB_ADD_MOCK_DATA=true API_TOKENS=dev-read \
+API_MODE=development API_BIND=":8085" DB_TYPE=memory DB_ADD_MOCK_DATA=true \
 DEV_AUTH_USER=root.admin@uni.example ADMIN_TOKENS=group:root_uni GROUP_RELATIONS=dozent,studierende go run ./cmd
 ```
+
+`GROUP_RELATIONS` names the relations the mock data's courses carry (`dozent`, `studierende`), so the API accepts them too. The self-service UI reaches `/v1/manage` through its dev server's proxy, same-origin as in production: `GROUPS_BASE_URL=http://localhost:8084/api/groups GROUPS_DEV_UPSTREAM=http://localhost:8085 npm run dev` there forwards `/api/groups/…` to this service.
 
 ## Configuration
 
@@ -149,6 +149,7 @@ DEV_AUTH_USER=root.admin@uni.example ADMIN_TOKENS=group:root_uni GROUP_RELATIONS
 | `API_WRITE_TOKENS` | — | Comma-separated bearer tokens allowed to write; empty means nobody can write |
 | `SOURCE_UPLOAD_TOKENS` | — | Comma-separated `<source>=<token>` pairs; each token may only upload to the source of that name |
 | `CORS_ALLOWED_ORIGINS` | — | Exact origins allowed for browser access; empty allows none |
+| `TRUSTED_PROXIES` | *(empty)* | Reverse proxies (addresses or CIDRs) whose `X-Forwarded-For` is believed for the client IP in the logs; empty trusts none |
 | `DB_TYPE` | `memory` | `memory` \| `postgres` |
 | `DB_CONNECTION_STRING` | local Postgres DSN | Used when `DB_TYPE=postgres` |
 | `DB_ADD_MOCK_DATA` | `false` | Seed example groups and identities |
@@ -167,8 +168,7 @@ DEV_AUTH_USER=root.admin@uni.example ADMIN_TOKENS=group:root_uni GROUP_RELATIONS
 | `MAX_RESPONSE_LIMIT` | `50` | Cap on results per group or user search |
 | `SERVICE_TIMEOUT_SECONDS` | `30` | Per-request timeout |
 
-`memory` loses everything on restart and is for development only; production runs
-`postgres`.
+`memory` loses everything on restart and is for development only; production runs `postgres`.
 
 ## Consumers
 
