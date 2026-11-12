@@ -591,6 +591,13 @@ func (s *Service) Detail(ctx context.Context, caller Caller, groupToken string) 
 	if err != nil {
 		return nil, err
 	}
+	// Empty lists, not null: the UI reads their length, and a group nobody maintains (every group of a sync source) answered "managers": null and crashed its detail page.
+	if memberships == nil {
+		memberships = []common.Membership{}
+	}
+	if managers == nil {
+		managers = []common.Manager{}
+	}
 	return &GroupDetail{
 		Group:       s.withSourceNames(ctx, []common.Group{*g})[0],
 		Memberships: memberships,

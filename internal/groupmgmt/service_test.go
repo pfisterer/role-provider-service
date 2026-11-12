@@ -2,6 +2,7 @@ package groupmgmt
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"slices"
 	"strings"
@@ -405,5 +406,23 @@ func TestChangeRelation(t *testing.T) {
 	h, _ := svc.History(ctx, admin, "group:kurs", 1)
 	if len(h) != 1 || h[0].Action != common.ChangeRelationChanged || h[0].Relation != "dozent" || h[0].Detail != "member" {
 		t.Errorf("history = %+v", h)
+	}
+}
+
+// A group with no managers and no entries answers empty lists, not null: the UI reads their length, and the detail page of a group nobody maintains crashed on "managers": null.
+func TestDetailListsAreNeverNull(t *testing.T) {
+	ctx := context.Background()
+	svc, _ := newTestService(t)
+	admin := Caller{Actor: "root@x", Admin: true}
+	if _, err := svc.CreateGroup(ctx, admin, "empty", "", "", nil); err != nil {
+		t.Fatal(err)
+	}
+	d, err := svc.Detail(ctx, admin, "group:empty")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(d)
+	if !strings.Contains(string(b), `"managers":[]`) || !strings.Contains(string(b), `"memberships":[]`) {
+		t.Errorf("empty lists are not [] in %s", b)
 	}
 }
