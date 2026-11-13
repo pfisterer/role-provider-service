@@ -37,7 +37,7 @@ spec:
           # version is passed at all, so "new chart, old image" cannot occur.
           # An explicit value still wins — that is how argocd-image-updater
           # keeps driving the standalone releases.
-          image: {{ .Values.roleProviderService.image }}:{{ .Values.roleProviderService.version | default .Chart.AppVersion }}
+          image: {{ .Values.roleProviderService.image }}:{{ .Values.roleProviderService.version | default .Chart.AppVersion }}{{ with .Values.roleProviderService.digest }}@{{ . }}{{ end }}
           imagePullPolicy: {{ .Values.roleProviderService.imagePullPolicy | default "Always" }}
           ports:
             - containerPort: {{ .Values.roleProviderService.port }}
