@@ -123,6 +123,13 @@ type CommonSyncLog struct {
 	TuplesRemoved *int      `json:"tuples_removed,omitempty"`
 }
 
+// CommonViewer defines model for common.Viewer.
+type CommonViewer struct {
+	CreatedAt *string `json:"created_at,omitempty"`
+	CreatedBy *string `json:"created_by,omitempty"`
+	Token     *string `json:"token,omitempty"`
+}
+
 // GroupmgmtBrowsedGroup defines model for groupmgmt.BrowsedGroup.
 type GroupmgmtBrowsedGroup struct {
 	// ChildGroups ChildGroups counts the groups entered in this one.
@@ -131,7 +138,7 @@ type GroupmgmtBrowsedGroup struct {
 	Description *string `json:"description,omitempty"`
 	DisplayName *string `json:"display_name,omitempty"`
 
-	// Editable Editable: a group of the local source the caller maintains. Groups of sync sources are read-only here; they change at their source.
+	// Editable Editable: a group of the local source the caller maintains. Groups of sync sources are read-only here; they change at their source. A group the caller may only look at (see Service.readableGroup) is listed read-only too.
 	Editable *bool `json:"editable,omitempty"`
 
 	// Id short ID, e.g. "dept_cs_faculty"
@@ -160,6 +167,13 @@ type GroupmgmtGroupDetail struct {
 	// MayDelete MayDelete: the caller may delete the group (admins, local groups).
 	MayDelete   *bool               `json:"may_delete,omitempty"`
 	Memberships *[]CommonMembership `json:"memberships,omitempty"`
+
+	// ViewOnly ViewOnly: the caller may only look at the group's members — as its viewer, or as manager or viewer of a group it is nested in —, not change it or read its history.
+	ViewOnly *bool           `json:"view_only,omitempty"`
+	Viewers  *[]CommonViewer `json:"viewers,omitempty"`
+
+	// ViewersEditable ViewersEditable: the caller may add and remove the group's viewers — its managers for a local group, admins for every group, a sync source's too.
+	ViewersEditable *bool `json:"viewers_editable,omitempty"`
 }
 
 // GroupmgmtGroupPage defines model for groupmgmt.GroupPage.
@@ -200,6 +214,12 @@ type WebserverAddMemberRequest struct {
 
 	// Relation Relation the member gets in the group; empty means "member".
 	Relation *string `json:"relation,omitempty"`
+}
+
+// WebserverAddViewerRequest defines model for webserver.addViewerRequest.
+type WebserverAddViewerRequest struct {
+	// Viewer Viewer is user:<email>, group:<id> or group:<id>#<relation>.
+	Viewer string `json:"viewer"`
 }
 
 // WebserverChangeRelationRequest defines model for webserver.changeRelationRequest.
@@ -262,6 +282,9 @@ type WebserverManageMeResponse struct {
 
 	// SourceName SourceName is the name of the local source, shown next to its groups.
 	SourceName *string `json:"source_name,omitempty"`
+
+	// ViewsAny ViewsAny: the caller is a viewer of at least one group, so the section has groups to show them read-only even where they maintain none.
+	ViewsAny *bool `json:"views_any,omitempty"`
 }
 
 // WebserverStatsResponse defines model for webserver.statsResponse.
@@ -361,6 +384,12 @@ type ManageRemoveMemberParams struct {
 	Relation *string `form:"relation,omitempty" json:"relation,omitempty"`
 }
 
+// ManageRemoveViewerParams defines parameters for ManageRemoveViewer.
+type ManageRemoveViewerParams struct {
+	// Viewer Viewer token
+	Viewer string `form:"viewer" json:"viewer"`
+}
+
 // ManageSearchPrincipalsParams defines parameters for ManageSearchPrincipals.
 type ManageSearchPrincipalsParams struct {
 	// Q Search query
@@ -408,6 +437,9 @@ type ManageChangeRelationJSONRequestBody = WebserverChangeRelationRequest
 
 // ManageAddMemberJSONRequestBody defines body for ManageAddMember for application/json ContentType.
 type ManageAddMemberJSONRequestBody = WebserverAddMemberRequest
+
+// ManageAddViewerJSONRequestBody defines body for ManageAddViewer for application/json ContentType.
+type ManageAddViewerJSONRequestBody = WebserverAddViewerRequest
 
 // CreateSyncSourceJSONRequestBody defines body for CreateSyncSource for application/json ContentType.
 type CreateSyncSourceJSONRequestBody = WebserverCreateSourceRequest
@@ -572,6 +604,14 @@ type ClientInterface interface {
 	ManageAddMemberWithBody(ctx context.Context, group string, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	ManageAddMember(ctx context.Context, group string, body ManageAddMemberJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ManageRemoveViewer request
+	ManageRemoveViewer(ctx context.Context, group string, params *ManageRemoveViewerParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ManageAddViewerWithBody request with any body
+	ManageAddViewerWithBody(ctx context.Context, group string, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	ManageAddViewer(ctx context.Context, group string, body ManageAddViewerJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// ManageGetMe request
 	ManageGetMe(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -970,6 +1010,42 @@ func (c *Client) ManageAddMemberWithBody(ctx context.Context, group string, cont
 
 func (c *Client) ManageAddMember(ctx context.Context, group string, body ManageAddMemberJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewManageAddMemberRequest(c.Server, group, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ManageRemoveViewer(ctx context.Context, group string, params *ManageRemoveViewerParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewManageRemoveViewerRequest(c.Server, group, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ManageAddViewerWithBody(ctx context.Context, group string, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewManageAddViewerRequestWithBody(c.Server, group, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ManageAddViewer(ctx context.Context, group string, body ManageAddViewerJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewManageAddViewerRequest(c.Server, group, body)
 	if err != nil {
 		return nil, err
 	}
@@ -2279,6 +2355,105 @@ func NewManageAddMemberRequestWithBody(server string, group string, contentType 
 	return req, nil
 }
 
+// NewManageRemoveViewerRequest generates requests for ManageRemoveViewer
+func NewManageRemoveViewerRequest(server string, group string, params *ManageRemoveViewerParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "group", group, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/v1/manage/groups/%s/viewers", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		queryValues := queryURL.Query()
+
+		if queryFrag, err := runtime.StyleParamWithOptions("form", true, "viewer", params.Viewer, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+			return nil, err
+		} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+			return nil, err
+		} else {
+			for k, v := range parsed {
+				for _, v2 := range v {
+					queryValues.Add(k, v2)
+				}
+			}
+		}
+
+		queryURL.RawQuery = queryValues.Encode()
+	}
+
+	req, err := http.NewRequest("DELETE", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewManageAddViewerRequest calls the generic ManageAddViewer builder with application/json body
+func NewManageAddViewerRequest(server string, group string, body ManageAddViewerJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewManageAddViewerRequestWithBody(server, group, "application/json", bodyReader)
+}
+
+// NewManageAddViewerRequestWithBody generates requests for ManageAddViewer with any type of body
+func NewManageAddViewerRequestWithBody(server string, group string, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "group", group, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/v1/manage/groups/%s/viewers", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
 // NewManageGetMeRequest generates requests for ManageGetMe
 func NewManageGetMeRequest(server string) (*http.Request, error) {
 	var err error
@@ -2935,6 +3110,14 @@ type ClientWithResponsesInterface interface {
 
 	ManageAddMemberWithResponse(ctx context.Context, group string, body ManageAddMemberJSONRequestBody, reqEditors ...RequestEditorFn) (*ManageAddMemberResponse, error)
 
+	// ManageRemoveViewerWithResponse request
+	ManageRemoveViewerWithResponse(ctx context.Context, group string, params *ManageRemoveViewerParams, reqEditors ...RequestEditorFn) (*ManageRemoveViewerResponse, error)
+
+	// ManageAddViewerWithBodyWithResponse request with any body
+	ManageAddViewerWithBodyWithResponse(ctx context.Context, group string, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*ManageAddViewerResponse, error)
+
+	ManageAddViewerWithResponse(ctx context.Context, group string, body ManageAddViewerJSONRequestBody, reqEditors ...RequestEditorFn) (*ManageAddViewerResponse, error)
+
 	// ManageGetMeWithResponse request
 	ManageGetMeWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ManageGetMeResponse, error)
 
@@ -3482,6 +3665,48 @@ func (r ManageAddMemberResponse) Status() string {
 
 // StatusCode returns HTTPResponse.StatusCode
 func (r ManageAddMemberResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type ManageRemoveViewerResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+}
+
+// Status returns HTTPResponse.Status
+func (r ManageRemoveViewerResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ManageRemoveViewerResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type ManageAddViewerResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+}
+
+// Status returns HTTPResponse.Status
+func (r ManageAddViewerResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ManageAddViewerResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -4090,6 +4315,32 @@ func (c *ClientWithResponses) ManageAddMemberWithResponse(ctx context.Context, g
 		return nil, err
 	}
 	return ParseManageAddMemberResponse(rsp)
+}
+
+// ManageRemoveViewerWithResponse request returning *ManageRemoveViewerResponse
+func (c *ClientWithResponses) ManageRemoveViewerWithResponse(ctx context.Context, group string, params *ManageRemoveViewerParams, reqEditors ...RequestEditorFn) (*ManageRemoveViewerResponse, error) {
+	rsp, err := c.ManageRemoveViewer(ctx, group, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseManageRemoveViewerResponse(rsp)
+}
+
+// ManageAddViewerWithBodyWithResponse request with arbitrary body returning *ManageAddViewerResponse
+func (c *ClientWithResponses) ManageAddViewerWithBodyWithResponse(ctx context.Context, group string, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*ManageAddViewerResponse, error) {
+	rsp, err := c.ManageAddViewerWithBody(ctx, group, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseManageAddViewerResponse(rsp)
+}
+
+func (c *ClientWithResponses) ManageAddViewerWithResponse(ctx context.Context, group string, body ManageAddViewerJSONRequestBody, reqEditors ...RequestEditorFn) (*ManageAddViewerResponse, error) {
+	rsp, err := c.ManageAddViewer(ctx, group, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseManageAddViewerResponse(rsp)
 }
 
 // ManageGetMeWithResponse request returning *ManageGetMeResponse
@@ -4926,6 +5177,38 @@ func ParseManageAddMemberResponse(rsp *http.Response) (*ManageAddMemberResponse,
 	}
 
 	response := &ManageAddMemberResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	return response, nil
+}
+
+// ParseManageRemoveViewerResponse parses an HTTP response from a ManageRemoveViewerWithResponse call
+func ParseManageRemoveViewerResponse(rsp *http.Response) (*ManageRemoveViewerResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ManageRemoveViewerResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	return response, nil
+}
+
+// ParseManageAddViewerResponse parses an HTTP response from a ManageAddViewerWithResponse call
+func ParseManageAddViewerResponse(rsp *http.Response) (*ManageAddViewerResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ManageAddViewerResponse{
 		Body:         bodyBytes,
 		HTTPResponse: rsp,
 	}

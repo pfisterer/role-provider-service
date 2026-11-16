@@ -14,7 +14,7 @@ import (
 // BrowsedGroup is a group as the group pages list it: where it comes from, whether the caller may change it, and how many groups it holds, so a tree knows what can be opened.
 type BrowsedGroup struct {
 	common.Group
-	// Editable: a group of the local source the caller maintains. Groups of sync sources are read-only here; they change at their source.
+	// Editable: a group of the local source the caller maintains. Groups of sync sources are read-only here; they change at their source. A group the caller may only look at (see Service.readableGroup) is listed read-only too.
 	Editable bool `json:"editable"`
 	// ChildGroups counts the groups entered in this one.
 	ChildGroups int `json:"child_groups"`
@@ -36,14 +36,14 @@ type BrowseQuery struct {
 	Offset int
 }
 
-// Browse lists groups for the group pages. Admins see every source; everybody else the local groups they maintain, searched by Query, whatever else is asked.
+// Browse lists groups for the group pages. Admins see every source; everybody else the groups they may look at — the local groups they maintain, the groups they view and every group nested in one of them, editable only where they maintain it —, searched by Query, whatever else is asked.
 func (s *Service) Browse(ctx context.Context, caller Caller, q BrowseQuery) (*GroupPage, error) {
 	if !caller.Admin {
-		groups, err := s.ManagedGroups(ctx, caller, q.Query)
+		groups, managed, err := s.readableGroups(ctx, caller, q.Query)
 		if err != nil {
 			return nil, err
 		}
-		return s.page(ctx, groups, nil, q)
+		return s.page(ctx, groups, nil, q, func(g common.Group) bool { return managed[g.ID] })
 	}
 
 	ctx, cancel := s.ctx(ctx)
@@ -117,7 +117,7 @@ func (s *Service) Browse(ctx context.Context, caller Caller, q BrowseQuery) (*Gr
 			}
 		}
 	}
-	return s.page(ctx, out, children, q)
+	return s.page(ctx, out, children, q, func(g common.Group) bool { return s.isLocal(&g) })
 }
 
 // pathDown is the shortest way from the top of a group's source tree down to the group, as the tree shows it: through groups of the same source, ending with the group itself.
@@ -156,8 +156,8 @@ func pathDown(g common.Group, byID map[string]common.Group, parents map[string][
 	return []string{g.ID}
 }
 
-// page cuts one page out of the groups and says of each whether the caller may change it — every local group listed is, since admins maintain all of them and everybody else is listed only theirs — and how many groups it holds; children nil means they are counted here.
-func (s *Service) page(ctx context.Context, groups []common.Group, children map[string][]string, q BrowseQuery) (*GroupPage, error) {
+// page cuts one page out of the groups and says of each whether the caller may change it (editable) and how many groups it holds; children nil means they are counted here.
+func (s *Service) page(ctx context.Context, groups []common.Group, children map[string][]string, q BrowseQuery, editable func(common.Group) bool) (*GroupPage, error) {
 	if children == nil {
 		edges, err := s.store.GroupEdges(ctx)
 		if err != nil {
@@ -176,8 +176,7 @@ func (s *Service) page(ctx context.Context, groups []common.Group, children map[
 	}
 	items := make([]BrowsedGroup, 0, end-start)
 	for _, g := range groups[start:end] {
-		local := g.SourceID != nil && *g.SourceID == s.localID
-		items = append(items, BrowsedGroup{Group: g, Editable: local, ChildGroups: len(children[g.ID])})
+		items = append(items, BrowsedGroup{Group: g, Editable: editable(g), ChildGroups: len(children[g.ID])})
 	}
 	return &GroupPage{Items: items, Total: total}, nil
 }
@@ -251,14 +250,169 @@ func (s *Service) Sources(ctx context.Context, caller Caller) ([]SourceSummary, 
 	return out, nil
 }
 
-// readableGroup returns a group the caller may look at: any group for an admin, else a local group they maintain (see localGroup).
-func (s *Service) readableGroup(ctx context.Context, caller Caller, token string) (*common.Group, error) {
-	if !caller.Admin {
-		return s.localGroup(ctx, caller, token)
-	}
+// readableGroup returns a group the caller may look at, and whether they maintain it: any group for an admin (maintains: true, though of a sync source's group only the viewers can be changed); a local group they manage; else a group they may only look at (see mayView) — of any source, so a course group a sync brings can be read below the local group it is nested in. Otherwise the refusal a maintainer gets (see localGroup).
+func (s *Service) readableGroup(ctx context.Context, caller Caller, token string) (*common.Group, bool, error) {
 	_, id, err := parseGroupToken(token)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	return s.getGroup(ctx, id, token)
+	g, err := s.getGroup(ctx, id, token)
+	if err != nil {
+		return nil, false, err
+	}
+	if caller.Admin {
+		return g, true, nil
+	}
+	if s.isLocal(g) {
+		ok, err := s.mayManage(ctx, caller, g.ID)
+		if err != nil {
+			return nil, false, err
+		}
+		if ok {
+			return g, true, nil
+		}
+	}
+	ok, err := s.mayView(ctx, caller, g.ID)
+	if err != nil {
+		return nil, false, err
+	}
+	if ok {
+		return g, false, nil
+	}
+	if _, err := s.localGroup(ctx, caller, token); err != nil {
+		return nil, false, err
+	}
+	return nil, false, fmt.Errorf("%w: group '%s' is not one you maintain", ErrForbidden, token)
+}
+
+// grants are the groups the caller maintains (managed) or is a viewer of (viewed), directly through one of their tokens. A manager entry counts only on a local group, the only ones maintained here; a viewer entry on a group of any source, since admins set viewers on a sync source's groups too (see viewersGroup).
+func (s *Service) grants(ctx context.Context, caller Caller) (managed, viewed map[string]bool, err error) {
+	managedIDs, err := s.store.ManagedGroups(ctx, caller.Tokens)
+	if err != nil {
+		return nil, nil, err
+	}
+	viewedIDs, err := s.store.ViewedGroups(ctx, caller.Tokens)
+	if err != nil {
+		return nil, nil, err
+	}
+	managed, viewed = map[string]bool{}, map[string]bool{}
+	if len(managedIDs)+len(viewedIDs) == 0 {
+		return managed, viewed, nil
+	}
+	owners, err := s.store.GroupOwners(ctx, append(slices.Clone(managedIDs), viewedIDs...))
+	if err != nil {
+		return nil, nil, err
+	}
+	local := func(id string) bool { o := owners[id]; return o != nil && *o == s.localID }
+	for _, id := range managedIDs {
+		if local(id) {
+			managed[id] = true
+		}
+	}
+	for _, id := range viewedIDs {
+		// Only groups that exist: a row whose group is gone grants nothing.
+		if _, ok := owners[id]; ok {
+			viewed[id] = true
+		}
+	}
+	return managed, viewed, nil
+}
+
+// groupTree is the live nesting of groups both ways, from GroupEdges: an expired entry of a group in a group nests nothing.
+func (s *Service) groupTree(ctx context.Context) (children, parents map[string][]string, err error) {
+	edges, err := s.store.GroupEdges(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	children, parents = map[string][]string{}, map[string][]string{}
+	for _, e := range edges {
+		children[e[0]] = append(children[e[0]], e[1])
+		parents[e[1]] = append(parents[e[1]], e[0])
+	}
+	return children, parents, nil
+}
+
+// reach is every group reachable from the start groups along next, the start groups included. Each group is visited once, so a cycle — refused for groups maintained here, but a sync could bring one — ends the walk instead of looping, and the walk is bounded by the number of groups.
+func reach(start []string, next map[string][]string) map[string]bool {
+	seen := make(map[string]bool, len(start))
+	queue := make([]string, 0, len(start))
+	for _, id := range start {
+		if !seen[id] {
+			seen[id] = true
+			queue = append(queue, id)
+		}
+	}
+	for len(queue) > 0 {
+		id := queue[0]
+		queue = queue[1:]
+		for _, n := range next[id] {
+			if !seen[n] {
+				seen[n] = true
+				queue = append(queue, n)
+			}
+		}
+	}
+	return seen
+}
+
+// mayView reports whether the caller may look at a group's members without maintaining it: they are a viewer of it, or a manager of a local group or a viewer of any group it is nested in, directly or further down — through any entry of the group in that group, also one naming a relation ("group:wwi24#studierende"). Reading is all that is passed down: managing a group lets nobody change the groups nested in it.
+func (s *Service) mayView(ctx context.Context, caller Caller, groupID string) (bool, error) {
+	managed, viewed, err := s.grants(ctx, caller)
+	if err != nil || len(managed)+len(viewed) == 0 {
+		return false, err
+	}
+	_, parents, err := s.groupTree(ctx)
+	if err != nil {
+		return false, err
+	}
+	for id := range reach([]string{groupID}, parents) {
+		if managed[id] || viewed[id] {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// readableGroups lists, for somebody not an admin, the groups they may look at — the local groups they maintain, the groups of any source they view, and every group nested in one of them (see mayView) —, narrowed by a search query, and the ones of them they maintain.
+func (s *Service) readableGroups(ctx context.Context, caller Caller, query string) ([]common.Group, map[string]bool, error) {
+	ctx, cancel := s.ctx(ctx)
+	defer cancel()
+	managed, viewed, err := s.grants(ctx, caller)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(managed)+len(viewed) == 0 {
+		return []common.Group{}, managed, nil
+	}
+	children, _, err := s.groupTree(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	roots := make([]string, 0, len(managed)+len(viewed))
+	for id := range managed {
+		roots = append(roots, id)
+	}
+	for id := range viewed {
+		roots = append(roots, id)
+	}
+	readable := reach(roots, children)
+	candidates, err := s.search(ctx, query)
+	if err != nil {
+		return nil, nil, err
+	}
+	out := []common.Group{}
+	for _, g := range candidates {
+		if readable[g.ID] {
+			out = append(out, g)
+		}
+	}
+	return out, managed, nil
+}
+
+// ViewsAny reports whether the caller is a viewer of at least one group: whether the group pages have something to show them even where they maintain nothing.
+func (s *Service) ViewsAny(ctx context.Context, caller Caller) (bool, error) {
+	ctx, cancel := s.ctx(ctx)
+	defer cancel()
+	_, viewed, err := s.grants(ctx, caller)
+	return len(viewed) > 0, err
 }

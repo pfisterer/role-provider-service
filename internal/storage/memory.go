@@ -40,6 +40,7 @@ type MemoryStore struct {
 	tuples   []memTuple
 	syncLogs []common.SyncLog
 	managers map[string][]common.Manager // keyed by group ID
+	viewers  map[string][]common.Viewer  // keyed by group ID
 	changes  []common.Change
 	log      *zap.SugaredLogger
 }
@@ -51,6 +52,7 @@ func NewMemoryStore(log *zap.SugaredLogger) *MemoryStore {
 		groups:   make(map[string]*common.Group),
 		sources:  make(map[uuid.UUID]*common.Source),
 		managers: make(map[string][]common.Manager),
+		viewers:  make(map[string][]common.Viewer),
 		log:      log,
 	}
 }
@@ -184,10 +186,11 @@ func (s *MemoryStore) DeleteGroup(_ context.Context, id string) error {
 	delete(s.groups, id)
 	delete(s.managers, id)
 	for gid, ms := range s.managers {
-		s.managers[gid] = slices.DeleteFunc(ms, func(m common.Manager) bool {
-			g, _ := common.SplitGroupRelation(strings.TrimPrefix(m.Token, common.GroupPrefix))
-			return strings.HasPrefix(m.Token, common.GroupPrefix) && g == id
-		})
+		s.managers[gid] = slices.DeleteFunc(ms, func(m common.Manager) bool { return namesGroup(m.Token, id) })
+	}
+	delete(s.viewers, id)
+	for gid, vs := range s.viewers {
+		s.viewers[gid] = slices.DeleteFunc(vs, func(v common.Viewer) bool { return namesGroup(v.Token, id) })
 	}
 	kept := s.tuples[:0]
 	for _, t := range s.tuples {
@@ -649,15 +652,15 @@ func (s *MemoryStore) ReplaceTuples(_ context.Context, sourceID uuid.UUID, newTu
 
 	// As in the Postgres store: a group of this source with nothing in it and nothing pointing at it goes.
 	for id, g := range s.groups {
-		if g.SourceID == nil || *g.SourceID != sourceID || len(s.managers[id]) > 0 {
+		if g.SourceID == nil || *g.SourceID != sourceID || len(s.managers[id]) > 0 || len(s.viewers[id]) > 0 {
 			continue
 		}
 		used := slices.ContainsFunc(s.tuples, func(t memTuple) bool { return t.objID == id || (t.subjType == "group" && t.subjID == id) })
 		for _, ms := range s.managers {
-			used = used || slices.ContainsFunc(ms, func(m common.Manager) bool {
-				gid, _ := common.SplitGroupRelation(strings.TrimPrefix(m.Token, common.GroupPrefix))
-				return strings.HasPrefix(m.Token, common.GroupPrefix) && gid == id
-			})
+			used = used || slices.ContainsFunc(ms, func(m common.Manager) bool { return namesGroup(m.Token, id) })
+		}
+		for _, vs := range s.viewers {
+			used = used || slices.ContainsFunc(vs, func(v common.Viewer) bool { return namesGroup(v.Token, id) })
 		}
 		if !used {
 			delete(s.groups, id)
@@ -723,6 +726,59 @@ func (s *MemoryStore) RemoveManager(_ context.Context, groupID, token string) er
 	defer s.mu.Unlock()
 	s.managers[groupID] = slices.DeleteFunc(s.managers[groupID], func(m common.Manager) bool { return m.Token == token })
 	return nil
+}
+
+// namesGroup reports whether a manager or viewer token names the group, with or without a relation.
+func namesGroup(token, id string) bool {
+	rest, ok := strings.CutPrefix(token, common.GroupPrefix)
+	if !ok {
+		return false
+	}
+	g, _ := common.SplitGroupRelation(rest)
+	return g == id
+}
+
+// ── Viewers ──────────────────────────────────────────────────────────────────
+
+func (s *MemoryStore) ListViewers(_ context.Context, groupID string) ([]common.Viewer, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := slices.Clone(s.viewers[groupID])
+	slices.SortFunc(out, func(a, b common.Viewer) int { return strings.Compare(a.Token, b.Token) })
+	return out, nil
+}
+
+func (s *MemoryStore) AddViewer(_ context.Context, groupID string, v common.Viewer) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, existing := range s.viewers[groupID] {
+		if existing.Token == v.Token {
+			return nil
+		}
+	}
+	v.CreatedAt = time.Now().UTC()
+	s.viewers[groupID] = append(s.viewers[groupID], v)
+	return nil
+}
+
+func (s *MemoryStore) RemoveViewer(_ context.Context, groupID, token string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.viewers[groupID] = slices.DeleteFunc(s.viewers[groupID], func(v common.Viewer) bool { return v.Token == token })
+	return nil
+}
+
+func (s *MemoryStore) ViewedGroups(_ context.Context, tokens []string) ([]string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	ids := []string{}
+	for gid, vs := range s.viewers {
+		if slices.ContainsFunc(vs, func(v common.Viewer) bool { return slices.Contains(tokens, v.Token) }) {
+			ids = append(ids, gid)
+		}
+	}
+	slices.Sort(ids)
+	return ids, nil
 }
 
 func (s *MemoryStore) GroupEdges(_ context.Context) ([][2]string, error) {

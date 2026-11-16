@@ -154,12 +154,12 @@ func TestDevLoginManage(t *testing.T) {
 		t.Errorf("create: %d %s", w.Code, w.Body)
 	}
 
-	// Acting on behalf: the person's own view, no admin.
+	// Acting on behalf: the person's own view, no admin — the groups they maintain, cloud_lab they may look at through the cloud lab leads, and what is nested in those.
 	w = s.devRequest(http.MethodGet, "/v1/manage/me", "faculty@cs.example", "")
 	if err := json.Unmarshal(w.Body.Bytes(), &me); err != nil || me.Admin || me.ActingAs != "faculty@cs.example" || !me.ManagesAny {
 		t.Errorf("/me on behalf: %d %s", w.Code, w.Body)
 	}
-	if ids := groupIDs(t, s.devRequest(http.MethodGet, "/v1/manage/groups", "faculty@cs.example", "")); !slices.Equal(ids, []string{"cloud_lab_tutors", "cs_seminar", "thesis_2026"}) {
+	if ids := groupIDs(t, s.devRequest(http.MethodGet, "/v1/manage/groups", "faculty@cs.example", "")); !slices.Equal(ids, []string{"cloud_lab", "cloud_lab_tutors", "cs_seminar", "staff-cs", "thesis_2026", "wwi24sea"}) {
 		t.Errorf("faculty's groups: %v", ids)
 	}
 
@@ -189,7 +189,7 @@ func TestDevLoginWithoutAdminTokens(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &me); err != nil || me.Admin || me.MayActAs || !me.ManagesAny {
 		t.Fatalf("/me: %d %s", w.Code, w.Body)
 	}
-	if ids := groupIDs(t, s.devRequest(http.MethodGet, "/v1/manage/groups", "", "")); !slices.Equal(ids, []string{"cloud_lab", "cloud_lab_leads", "cloud_lab_tutors", "thesis_2026"}) {
+	if ids := groupIDs(t, s.devRequest(http.MethodGet, "/v1/manage/groups", "", "")); !slices.Equal(ids, []string{"cloud_lab", "cloud_lab_leads", "cloud_lab_tutors", "staff-cs", "thesis_2026", "wwi24sea"}) {
 		t.Errorf("dev user's groups: %v", ids)
 	}
 	if w := s.devRequest(http.MethodGet, "/v1/manage/me", "faculty@cs.example", ""); w.Code != http.StatusForbidden {

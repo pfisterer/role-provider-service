@@ -17,7 +17,7 @@ func ids(page *GroupPage) []string {
 	return out
 }
 
-// Admins browse every source as a tree and read its groups; only local groups can be changed, and everybody else still sees just the groups they maintain.
+// Admins browse every source as a tree and read its groups; only local groups can be changed, and everybody else still sees just the groups they maintain and those nested in them.
 func TestBrowseEverySource(t *testing.T) {
 	ctx := context.Background()
 	svc, store := newTestService(t, "studierende")
@@ -99,15 +99,18 @@ func TestBrowseEverySource(t *testing.T) {
 		t.Errorf("detail of a local group %+v %v", d, err)
 	}
 
-	// A manager: their groups only, whatever they ask for, and no other source.
+	// A manager: their groups and the groups nested in them, whatever they ask for — the Dualis course in their group read-only —, and nothing else of another source.
 	manager := person("m@x")
 	mine, err := svc.Browse(ctx, manager, BrowseQuery{Source: "dualis"})
 	must(t, err)
-	if got := ids(mine); len(got) != 1 || got[0] != "kurs-ma" || !mine.Items[0].Editable || mine.Items[0].ChildGroups != 1 {
+	if got := ids(mine); len(got) != 2 || got[0] != "dualis-ma-tmb24" || got[1] != "kurs-ma" || mine.Items[0].Editable || !mine.Items[1].Editable || mine.Items[1].ChildGroups != 1 {
 		t.Errorf("a manager's groups %+v", mine.Items)
 	}
-	if _, err := svc.Detail(ctx, manager, "group:dualis-ma-tmb24"); err == nil {
-		t.Error("a manager read a dualis group")
+	if d, err := svc.Detail(ctx, manager, "group:dualis-ma-tmb24"); err != nil || d.Editable || !d.ViewOnly {
+		t.Errorf("a manager reads the dualis course in their group read-only: %+v %v", d, err)
+	}
+	if _, err := svc.Detail(ctx, manager, "group:dualis-orga-ma-t-mb"); !errors.Is(err, ErrOwnedBySource) {
+		t.Errorf("a manager read a dualis group above their course: %v", err)
 	}
 	if _, err := svc.Sources(ctx, manager); !errors.Is(err, ErrForbidden) {
 		t.Errorf("a manager listed the sources: %v", err)

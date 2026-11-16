@@ -31,7 +31,7 @@ func storesUnderTest(t *testing.T) map[string]Store {
 		t.Fatalf("postgres: %v", err)
 	}
 	// Each test starts from an empty graph.
-	for _, table := range []string{"tuples", "groups", "sync_logs", "sources", "group_managers", "group_changes"} {
+	for _, table := range []string{"tuples", "groups", "sync_logs", "sources", "group_managers", "group_viewers", "group_changes"} {
 		if err := pg.DB().Exec("DELETE FROM " + table).Error; err != nil {
 			t.Fatalf("clean %s: %v", table, err)
 		}

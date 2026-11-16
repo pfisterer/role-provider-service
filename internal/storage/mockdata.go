@@ -95,20 +95,22 @@ type mockMember struct {
 	expiresIn time.Duration
 }
 
-// mockGroup is a seeded group with its members and, for local groups, the tokens that maintain it.
+// mockGroup is a seeded group with its members and, for local groups, the tokens that maintain it and those that may look at its members.
 type mockGroup struct {
 	group    common.Group
 	members  []mockMember
 	managers []string
+	viewers  []string
 }
 
-// seedMaintainedGroups adds groups of the local source (they are created without a source and adopted into the local one at startup, like the groups above) that people maintain through /v1/manage, so the self-service UI's group pages have something to show with the development sign-in (DEV_AUTH_USER=root.admin@uni.example): root.admin maintains most of them directly — so they are listed even without ADMIN_TOKENS — and faculty@cs.example maintains others, which acting on their behalf shows. Nesting stays among these groups and the synced ones below; none of them is entered in root_uni or another admin scope of openstack-management-api (see the note above).
+// seedMaintainedGroups adds groups of the local source (they are created without a source and adopted into the local one at startup, like the groups above) that people maintain through /v1/manage, so the self-service UI's group pages have something to show with the development sign-in (DEV_AUTH_USER=root.admin@uni.example): root.admin maintains most of them directly — so they are listed even without ADMIN_TOKENS — and faculty@cs.example maintains others, which acting on their behalf shows. Viewers: the cloud lab leads (faculty@cs.example) may look at cloud_lab and so at the synced staff-cs nested in it, and viewer@uni.example, who maintains nothing, at thesis_2026 and the synced course wwi24sea below it. Nesting stays among these groups and the synced ones below; none of them is entered in root_uni or another admin scope of openstack-management-api (see the note above).
 func seedMaintainedGroups(ctx context.Context, store Store) (int, error) {
 	const dev = "user:root.admin@uni.example"
 	groups := []mockGroup{
 		{
 			group:    common.Group{ID: "cloud_lab", DisplayName: "Cloud Lab", Description: "Everybody working in the cloud lab"},
 			managers: []string{dev},
+			viewers:  []string{"group:cloud_lab_leads"},
 			members: []mockMember{
 				{token: "group:cloud_lab_tutors", relation: common.RelationMember},
 				{token: "group:staff-cs", relation: common.RelationMember},
@@ -134,6 +136,7 @@ func seedMaintainedGroups(ctx context.Context, store Store) (int, error) {
 		{
 			group:    common.Group{ID: "thesis_2026", DisplayName: "Theses 2026", Description: "Students writing their thesis in 2026"},
 			managers: []string{dev, "user:faculty@cs.example"},
+			viewers:  []string{"user:viewer@uni.example"},
 			members: []mockMember{
 				{token: "user:cs-student@cs.com", relation: common.RelationMember},
 				{token: "user:student.two@cs.com", relation: common.RelationMember},
@@ -230,7 +233,7 @@ func seedSyncSources(ctx context.Context, store Store) (int, error) {
 	return n, nil
 }
 
-// createMockGroup creates a group of the given source (nil: none, adopted into the local source at startup) with its members and managers.
+// createMockGroup creates a group of the given source (nil: none, adopted into the local source at startup) with its members, managers and viewers.
 func createMockGroup(ctx context.Context, store Store, g mockGroup, sourceID *uuid.UUID) error {
 	grp := g.group
 	grp.SourceID = sourceID
@@ -250,6 +253,11 @@ func createMockGroup(ctx context.Context, store Store, g mockGroup, sourceID *uu
 	}
 	for _, token := range g.managers {
 		if err := store.AddManager(ctx, grp.ID, common.Manager{Token: token, CreatedBy: "mock data"}); err != nil {
+			return err
+		}
+	}
+	for _, token := range g.viewers {
+		if err := store.AddViewer(ctx, grp.ID, common.Viewer{Token: token, CreatedBy: "mock data"}); err != nil {
 			return err
 		}
 	}

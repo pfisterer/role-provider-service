@@ -9,7 +9,7 @@ import (
 	"github.com/pfisterer/role-provider-service/internal/groupmgmt"
 )
 
-// registerManageRoutes serves the people who maintain groups of the local source, through the self-service UI. Every route runs behind personAuthMiddleware and judges the request by callerOf.
+// registerManageRoutes serves the people who maintain groups of the local source, and those who may look at their members, through the self-service UI. Every route runs behind personAuthMiddleware and judges the request by callerOf.
 func registerManageRoutes(rg *gin.RouterGroup, svc *groupmgmt.Service, sourceName string, maxLimit int) {
 	rg.GET("/me", manageMe(svc, sourceName))
 	rg.GET("/principals", manageSearchPrincipals(svc, maxLimit))
@@ -26,6 +26,8 @@ func registerManageRoutes(rg *gin.RouterGroup, svc *groupmgmt.Service, sourceNam
 	g.GET("/:group/effective", manageEffectiveMembers(svc))
 	g.POST("/:group/managers", manageAddManager(svc))
 	g.DELETE("/:group/managers", manageRemoveManager(svc))
+	g.POST("/:group/viewers", manageAddViewer(svc))
+	g.DELETE("/:group/viewers", manageRemoveViewer(svc))
 	g.GET("/:group/history", manageHistory(svc))
 }
 
@@ -41,6 +43,8 @@ type manageMeResponse struct {
 	Admin bool `json:"admin"`
 	// ManagesAny: the caller maintains at least one group, or is an admin — whether the UI offers the section at all.
 	ManagesAny bool `json:"manages_any"`
+	// ViewsAny: the caller is a viewer of at least one group, so the section has groups to show them read-only even where they maintain none.
+	ViewsAny bool `json:"views_any"`
 	// Relations a member can hold, "member" first.
 	Relations []string `json:"relations"`
 	// SourceName is the name of the local source, shown next to its groups.
@@ -50,7 +54,7 @@ type manageMeResponse struct {
 // manageMe godoc
 //
 //	@Summary		Who the caller is
-//	@Description	The signed-in person, whom the request acts for, and whether they maintain groups here at all.
+//	@Description	The signed-in person, whom the request acts for, and whether they maintain groups here at all or may look at the members of some.
 //	@Tags			manage
 //	@Produce		json
 //	@Security		Bearer
@@ -70,12 +74,21 @@ func manageMe(svc *groupmgmt.Service, sourceName string) gin.HandlerFunc {
 			}
 			managesAny = len(groups) > 0
 		}
+		viewsAny := false
+		if !caller.Admin {
+			var err error
+			if viewsAny, err = svc.ViewsAny(c.Request.Context(), caller); err != nil {
+				respondError(c, err)
+				return
+			}
+		}
 		c.JSON(http.StatusOK, manageMeResponse{
 			Actor:      caller.Actor,
 			ActingAs:   caller.OnBehalfOf,
 			MayActAs:   c.GetBool(mayActAsKey),
 			Admin:      caller.Admin,
 			ManagesAny: managesAny,
+			ViewsAny:   viewsAny,
 			Relations:  svc.Relations(),
 			SourceName: sourceName,
 		})
@@ -114,7 +127,7 @@ func manageSearchPrincipals(svc *groupmgmt.Service, maxLimit int) gin.HandlerFun
 // manageListGroups godoc
 //
 //	@Summary		Groups to browse
-//	@Description	For an admin, every source: with path_to, the way from the top of that group's source tree down to it (top first, the group last, through groups of its source); the groups entered in parent; else those matching q, optionally of one source; else the top of a source's tree (its groups no other group of that source contains); with none of these the local groups. Everybody else gets the local groups they maintain, narrowed by q. Each group says whether the caller may change it (editable: local groups only) and how many groups it holds.
+//	@Description	For an admin, every source: with path_to, the way from the top of that group's source tree down to it (top first, the group last, through groups of its source); the groups entered in parent; else those matching q, optionally of one source; else the top of a source's tree (its groups no other group of that source contains); with none of these the local groups. Everybody else gets the groups they may look at, narrowed by q: the local groups they maintain, the groups of any source they are a viewer of, and every group nested in one of them. Each group says whether the caller may change it (editable: local groups they maintain, for admins every local group) and how many groups it holds.
 //	@Tags			manage
 //	@Produce		json
 //	@Security		Bearer
@@ -202,14 +215,14 @@ func manageCreateGroup(svc *groupmgmt.Service) gin.HandlerFunc {
 
 // manageGetGroup godoc
 //
-//	@Summary		A group with its entries and managers
-//	@Description	A group the caller maintains, or for an admin any group (a sync source's read-only, editable false): its direct entries with relation and expiry (expired ones included and marked), and who maintains it.
+//	@Summary		A group with its entries, managers and viewers
+//	@Description	A group the caller maintains, or for an admin any group (a sync source's read-only, editable false): its direct entries with relation and expiry (expired ones included and marked), who maintains it and who may look at its members. A viewer of the group, a viewer of any group it is nested in and a manager of a local group it is nested in (directly or further down; the group may be of any source) get it read-only with view_only true. viewers_editable says whether the caller may change the viewers: the group's managers, and admins on every group, a sync source's too.
 //	@Tags			manage
 //	@Produce		json
 //	@Security		Bearer
 //	@Param			group	path		string	true	"Group id"
 //	@Success		200		{object}	groupmgmt.GroupDetail
-//	@Failure		403		{object}	map[string]any	"Not maintained by the caller"
+//	@Failure		403		{object}	map[string]any	"Neither maintained nor viewable by the caller"
 //	@Failure		404		{object}	map[string]any	"Not found"
 //	@Failure		409		{object}	map[string]any	"Maintained by a sync source"
 //	@ID				manageGetGroup
@@ -370,13 +383,13 @@ func manageChangeRelation(svc *groupmgmt.Service) gin.HandlerFunc {
 // manageEffectiveMembers godoc
 //
 //	@Summary		Everyone the group counts
-//	@Description	The people a group counts in the end (one the caller maintains, or for an admin any group): sub-groups resolved, expired entries left out. People who are members only through a pattern are not listed.
+//	@Description	The people a group counts in the end (one the caller maintains or may look at, see manageGetGroup; for an admin any group): sub-groups resolved, expired entries left out. People who are members only through a pattern are not listed.
 //	@Tags			manage
 //	@Produce		json
 //	@Security		Bearer
 //	@Param			group	path		string	true	"Group id"
 //	@Success		200		{array}		string	"user: tokens"
-//	@Failure		403		{object}	map[string]any	"Not maintained by the caller"
+//	@Failure		403		{object}	map[string]any	"Neither maintained nor viewable by the caller"
 //	@ID				manageEffectiveMembers
 //	@Router			/v1/manage/groups/{group}/effective [get]
 func manageEffectiveMembers(svc *groupmgmt.Service) gin.HandlerFunc {
@@ -446,10 +459,66 @@ func manageRemoveManager(svc *groupmgmt.Service) gin.HandlerFunc {
 	}
 }
 
+type addViewerRequest struct {
+	// Viewer is user:<email>, group:<id> or group:<id>#<relation>.
+	Viewer string `json:"viewer" binding:"required"`
+}
+
+// manageAddViewer godoc
+//
+//	@Summary		Add a viewer
+//	@Description	Lets a person or a group (optionally one relation of it) look at the members of a group — its entries and everyone it counts in the end — and at those of every group nested in it, without changing anything. A viewer is not in the group and gains none of its rights. On a local group whoever may change the managers may change the viewers; on a group of a sync source (e.g. a course a sync brings) only admins may, and its sync leaves the viewers alone.
+//	@Tags			manage
+//	@Accept			json
+//	@Security		Bearer
+//	@Param			group	path	string				true	"Group id"
+//	@Param			body	body	addViewerRequest	true	"The viewer"
+//	@Success		204		"Added"
+//	@Failure		400		{object}	map[string]any	"Bad request"
+//	@Failure		403		{object}	map[string]any	"Not maintained by the caller, or a sync source's group and the caller no admin"
+//	@Failure		404		{object}	map[string]any	"The group or the group named as viewer does not exist"
+//	@ID				manageAddViewer
+//	@Router			/v1/manage/groups/{group}/viewers [post]
+func manageAddViewer(svc *groupmgmt.Service) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var req addViewerRequest
+		if !bindJSON(c, &req) {
+			return
+		}
+		if err := svc.AddViewer(c.Request.Context(), callerOf(c), c.Param("group"), req.Viewer); err != nil {
+			respondError(c, err)
+			return
+		}
+		c.Status(http.StatusNoContent)
+	}
+}
+
+// manageRemoveViewer godoc
+//
+//	@Summary		Remove a viewer
+//	@Description	Takes the right to look at the members of a group away from a token. Who may: see manageAddViewer.
+//	@Tags			manage
+//	@Security		Bearer
+//	@Param			group	path	string	true	"Group id"
+//	@Param			viewer	query	string	true	"Viewer token"
+//	@Success		204		"Removed"
+//	@Failure		403		{object}	map[string]any	"Not maintained by the caller, or a sync source's group and the caller no admin"
+//	@ID				manageRemoveViewer
+//	@Router			/v1/manage/groups/{group}/viewers [delete]
+func manageRemoveViewer(svc *groupmgmt.Service) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if err := svc.RemoveViewer(c.Request.Context(), callerOf(c), c.Param("group"), c.Query("viewer")); err != nil {
+			respondError(c, err)
+			return
+		}
+		c.Status(http.StatusNoContent)
+	}
+}
+
 // manageHistory godoc
 //
 //	@Summary		History of a group
-//	@Description	The most recent changes of a group (one the caller maintains, or for an admin any group), newest first: who added or removed what, and for whom an admin acted.
+//	@Description	The most recent changes of a group (one the caller maintains, or for an admin any group), newest first: who added or removed what, and for whom an admin acted. Not for viewers: they see the members as they are.
 //	@Tags			manage
 //	@Produce		json
 //	@Security		Bearer

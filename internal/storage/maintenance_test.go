@@ -157,6 +157,56 @@ func TestManagersAndHistory(t *testing.T) {
 	}
 }
 
+// Viewers are kept like managers and apart from them: listed, found by token, gone with their group — also where the deleted group was itself a viewer — and never a membership.
+func TestViewers(t *testing.T) {
+	ctx := context.Background()
+	for name, s := range storesUnderTest(t) {
+		t.Run(name, func(t *testing.T) {
+			for _, id := range []string{"kurs", "pruefungsamt", "other"} {
+				must(t, s.CreateGroup(ctx, &common.Group{ID: id}))
+			}
+			must(t, s.AddViewer(ctx, "kurs", common.Viewer{Token: "user:a@x", CreatedBy: "root@x"}))
+			must(t, s.AddViewer(ctx, "kurs", common.Viewer{Token: "user:a@x"}))
+			must(t, s.AddViewer(ctx, "kurs", common.Viewer{Token: "group:pruefungsamt"}))
+			must(t, s.AddViewer(ctx, "other", common.Viewer{Token: "group:pruefungsamt#leitung"}))
+
+			vs, err := s.ListViewers(ctx, "kurs")
+			must(t, err)
+			if len(vs) != 2 || vs[0].Token != "group:pruefungsamt" || vs[1].CreatedBy != "root@x" || vs[1].CreatedAt.IsZero() {
+				t.Errorf("viewers = %+v", vs)
+			}
+			ids, err := s.ViewedGroups(ctx, []string{"user:a@x", "group:pruefungsamt#leitung"})
+			must(t, err)
+			if !slices.Equal(ids, []string{"kurs", "other"}) {
+				t.Errorf("viewed = %v", ids)
+			}
+			if ids, _ := s.ManagedGroups(ctx, []string{"user:a@x"}); len(ids) != 0 {
+				t.Errorf("a viewer manages %v", ids)
+			}
+			if ms, _ := s.ListManagers(ctx, "kurs"); len(ms) != 0 {
+				t.Errorf("a viewer is listed as manager: %+v", ms)
+			}
+			if toks, _ := s.GetUserTokens(ctx, "a@x"); slices.Contains(toks, "group:kurs") {
+				t.Errorf("a viewer holds the group's token: %v", toks)
+			}
+
+			must(t, s.DeleteGroup(ctx, "pruefungsamt"))
+			if ids, _ := s.ViewedGroups(ctx, []string{"group:pruefungsamt", "group:pruefungsamt#leitung"}); len(ids) != 0 {
+				t.Errorf("the deleted group still views %v", ids)
+			}
+			must(t, s.RemoveViewer(ctx, "kurs", "user:a@x"))
+			if vs, _ := s.ListViewers(ctx, "kurs"); len(vs) != 0 {
+				t.Errorf("viewers after removal = %+v", vs)
+			}
+			must(t, s.AddViewer(ctx, "other", common.Viewer{Token: "user:b@x"}))
+			must(t, s.DeleteGroup(ctx, "other"))
+			if ids, _ := s.ViewedGroups(ctx, []string{"user:b@x"}); len(ids) != 0 {
+				t.Errorf("the deleted group's viewers remain: %v", ids)
+			}
+		})
+	}
+}
+
 // Reserved names survive a round trip through the store.
 func TestSourceReservedNames(t *testing.T) {
 	ctx := context.Background()
@@ -212,7 +262,7 @@ func TestChangeRelation(t *testing.T) {
 	}
 }
 
-// A group the import no longer names goes with its last entry, unless something still points at it: an entry in another group or a manager.
+// A group the import no longer names goes with its last entry, unless something still points at it: an entry in another group, a manager or a viewer.
 func TestReplaceTuples_DropsGroupsTheImportLeft(t *testing.T) {
 	ctx := context.Background()
 	for name, s := range storesUnderTest(t) {
@@ -223,19 +273,27 @@ func TestReplaceTuples_DropsGroupsTheImportLeft(t *testing.T) {
 				{GroupID: "kurs-eingehaengt", MemberType: "user", MemberID: "b@x"},
 				{GroupID: "kurs-verwaltet", MemberType: "user", MemberID: "c@x"},
 				{GroupID: "kurs-neu", MemberType: "user", MemberID: "d@x"},
+				{GroupID: "kurs-eingesehen", MemberType: "user", MemberID: "e@x"},
+				{GroupID: "kurs-sieht", MemberType: "user", MemberID: "f@x"},
 			}, nil)
 			must(t, err)
+			must(t, s.AddViewer(ctx, "kurs-eingesehen", common.Viewer{Token: "user:v@x"}))
 			must(t, s.CreateGroup(ctx, &common.Group{ID: "zwr-kurs"}))
 			must(t, s.AddMember(ctx, "zwr-kurs", "", "group", "kurs-eingehaengt", nil, nil))
 			must(t, s.AddManager(ctx, "kurs-verwaltet", common.Manager{Token: "user:m@x"}))
+			must(t, s.AddViewer(ctx, "zwr-kurs", common.Viewer{Token: "group:kurs-sieht#studierende"}))
 
 			_, _, err = s.ReplaceTuples(ctx, src, []common.TuplePair{{GroupID: "kurs-neu", MemberType: "user", MemberID: "d@x"}}, nil)
 			must(t, err)
-			for id, want := range map[string]bool{"kurs-alt": false, "kurs-eingehaengt": true, "kurs-verwaltet": true, "kurs-neu": true, "zwr-kurs": true} {
+			for id, want := range map[string]bool{"kurs-alt": false, "kurs-eingehaengt": true, "kurs-verwaltet": true, "kurs-neu": true, "zwr-kurs": true, "kurs-eingesehen": true, "kurs-sieht": true} {
 				g, err := s.GetGroup(ctx, id)
 				if got := err == nil && g != nil; got != want {
 					t.Errorf("%s present = %v, want %v", id, got, want)
 				}
+			}
+			// A sync never touches viewer rows.
+			if vs, _ := s.ListViewers(ctx, "kurs-eingesehen"); len(vs) != 1 || vs[0].Token != "user:v@x" {
+				t.Errorf("viewers of a synced group after a run = %+v", vs)
 			}
 		})
 	}

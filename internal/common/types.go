@@ -107,6 +107,13 @@ type Manager struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+// Viewer is a token allowed to look at a group's members — its direct entries and everyone it counts in the end — and those of every group nested in it: "user:<email>", "group:<id>" or "group:<id>#<relation>". Like a manager it is not in the group and gains none of its rights, and unlike a manager it changes nothing.
+type Viewer struct {
+	Token     string    `json:"token"`
+	CreatedBy string    `json:"created_by,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 // Change actions recorded in a group's history.
 const (
 	ChangeGroupCreated   = "group_created"
@@ -116,6 +123,8 @@ const (
 	ChangeMemberRemoved  = "member_removed"
 	ChangeManagerAdded   = "manager_added"
 	ChangeManagerRemoved = "manager_removed"
+	ChangeViewerAdded    = "viewer_added"
+	ChangeViewerRemoved  = "viewer_removed"
 	ChangeGroupAdopted   = "group_adopted"
 	// ChangeRelationChanged: Relation is the new relation, Detail the one before.
 	ChangeRelationChanged = "relation_changed"

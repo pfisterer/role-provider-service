@@ -97,6 +97,16 @@ type DBManager struct {
 
 func (DBManager) TableName() string { return "group_managers" }
 
+// DBViewer is a token allowed to look at a group's members and those of the groups nested in it. A table of its own like the managers, and for the same reason: a viewer must neither become a member nor be able to change anything.
+type DBViewer struct {
+	GroupID   string `gorm:"primaryKey"`
+	Token     string `gorm:"primaryKey"`
+	CreatedBy string `gorm:"not null;default:''"`
+	CreatedAt time.Time
+}
+
+func (DBViewer) TableName() string { return "group_viewers" }
+
 // DBChange is one entry in the history of a group maintained here.
 type DBChange struct {
 	ID         uuid.UUID `gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
@@ -172,6 +182,14 @@ type Store interface {
 	RemoveManager(ctx context.Context, groupID, token string) error
 	// ManagedGroups returns the groups any of the tokens may maintain.
 	ManagedGroups(ctx context.Context, tokens []string) ([]string, error)
+
+	// Viewers
+	ListViewers(ctx context.Context, groupID string) ([]common.Viewer, error)
+	AddViewer(ctx context.Context, groupID string, v common.Viewer) error
+	RemoveViewer(ctx context.Context, groupID, token string) error
+	// ViewedGroups returns the groups any of the tokens is a viewer of — directly; the groups nested in them are the service's business.
+	ViewedGroups(ctx context.Context, tokens []string) ([]string, error)
+
 	// GroupEdges returns every live entry of a group in a group, as [parent, child] ids — the shape of the group tree, for browsing it.
 	GroupEdges(ctx context.Context) ([][2]string, error)
 
@@ -223,7 +241,7 @@ func NewPostgresStore(dsn string, log *zap.SugaredLogger) (*PostgresStore, error
 	sqlDB.SetMaxOpenConns(10)
 	sqlDB.SetMaxIdleConns(5)
 
-	if err := db.AutoMigrate(&DBGroup{}, &DBSource{}, &DBSyncLog{}, &DBTuple{}, &DBManager{}, &DBChange{}); err != nil {
+	if err := db.AutoMigrate(&DBGroup{}, &DBSource{}, &DBSyncLog{}, &DBTuple{}, &DBManager{}, &DBViewer{}, &DBChange{}); err != nil {
 		return nil, fmt.Errorf("failed to migrate database schema: %w", err)
 	}
 	if err := normalizeStoredIDs(db); err != nil {
@@ -384,14 +402,19 @@ func (s *PostgresStore) UpdateGroup(ctx context.Context, id, displayName, descri
 		Updates(map[string]any{"display_name": displayName, "description": description}).Error
 }
 
-// DeleteGroup removes the group together with its tuples and manager entries, in one transaction: its members (obj_id), its memberships in other groups (a group subject), its managers and the places it manages. Left behind, its members would keep group:<id> in their tokens, and a group created later under the same id would inherit them.
+// DeleteGroup removes the group together with its tuples, manager and viewer entries, in one transaction: its members (obj_id), its memberships in other groups (a group subject), its managers and viewers and the places it manages or views. Left behind, its members would keep group:<id> in their tokens, and a group created later under the same id would inherit them.
 func (s *PostgresStore) DeleteGroup(ctx context.Context, id string) error {
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Where("obj_id = ? OR (subj_type = 'group' AND subj_id = ?)", id, id).Delete(&DBTuple{}).Error; err != nil {
 			return err
 		}
 		// A manager entry naming the group goes too: a group created later under the same id must not inherit who maintains what.
-		if err := tx.Where("group_id = ? OR token = ? OR token LIKE ?", id, common.GroupPrefix+id, common.GroupPrefix+id+common.RelationSeparator+"%").Delete(&DBManager{}).Error; err != nil {
+		naming := "group_id = ? OR token = ? OR token LIKE ?"
+		token, withRelation := common.GroupPrefix+id, common.GroupPrefix+id+common.RelationSeparator+"%"
+		if err := tx.Where(naming, id, token, withRelation).Delete(&DBManager{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where(naming, id, token, withRelation).Delete(&DBViewer{}).Error; err != nil {
 			return err
 		}
 		return tx.Where("id = ?", id).Delete(&DBGroup{}).Error
@@ -957,11 +980,12 @@ func (s *PostgresStore) ReplaceTuples(ctx context.Context, sourceID uuid.UUID, n
 		}
 		added = len(toInsert)
 
-		// A group the import no longer names goes with its last entry — a course that ended, a level the export dropped. Kept, empty, while anything still points at it: an entry in another group, a manager, or a manager entry naming it, so a hand-maintained group never loses an entry because a source moved on.
+		// A group the import no longer names goes with its last entry — a course that ended, a level the export dropped. Kept, empty, while anything still points at it: an entry in another group, a manager or viewer, or a manager or viewer entry naming it, so a hand-maintained group never loses an entry because a source moved on.
 		return tx.Exec(`DELETE FROM groups g
 			WHERE g.source_id = ?
 			  AND NOT EXISTS (SELECT 1 FROM tuples t WHERE t.obj_id = g.id OR (t.subj_type = 'group' AND t.subj_id = g.id))
-			  AND NOT EXISTS (SELECT 1 FROM group_managers m WHERE m.group_id = g.id OR m.token = 'group:' || g.id OR m.token LIKE 'group:' || g.id || '#%')`,
+			  AND NOT EXISTS (SELECT 1 FROM group_managers m WHERE m.group_id = g.id OR m.token = 'group:' || g.id OR m.token LIKE 'group:' || g.id || '#%')
+			  AND NOT EXISTS (SELECT 1 FROM group_viewers v WHERE v.group_id = g.id OR v.token = 'group:' || g.id OR v.token LIKE 'group:' || g.id || '#%')`,
 			sourceID).Error
 	})
 	return
@@ -1021,6 +1045,38 @@ func (s *PostgresStore) ManagedGroups(ctx context.Context, tokens []string) ([]s
 		return ids, nil
 	}
 	err := s.db.WithContext(ctx).Model(&DBManager{}).Distinct("group_id").Where("token IN ?", tokens).Order("group_id").Pluck("group_id", &ids).Error
+	return ids, err
+}
+
+// ── Viewers ──────────────────────────────────────────────────────────────────
+
+func (s *PostgresStore) ListViewers(ctx context.Context, groupID string) ([]common.Viewer, error) {
+	var rows []DBViewer
+	if err := s.db.WithContext(ctx).Where("group_id = ?", groupID).Order("token").Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	out := make([]common.Viewer, len(rows))
+	for i, r := range rows {
+		out[i] = common.Viewer{Token: r.Token, CreatedBy: r.CreatedBy, CreatedAt: r.CreatedAt}
+	}
+	return out, nil
+}
+
+func (s *PostgresStore) AddViewer(ctx context.Context, groupID string, v common.Viewer) error {
+	return s.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).
+		Create(&DBViewer{GroupID: groupID, Token: v.Token, CreatedBy: v.CreatedBy}).Error
+}
+
+func (s *PostgresStore) RemoveViewer(ctx context.Context, groupID, token string) error {
+	return s.db.WithContext(ctx).Where("group_id = ? AND token = ?", groupID, token).Delete(&DBViewer{}).Error
+}
+
+func (s *PostgresStore) ViewedGroups(ctx context.Context, tokens []string) ([]string, error) {
+	var ids []string
+	if len(tokens) == 0 {
+		return ids, nil
+	}
+	err := s.db.WithContext(ctx).Model(&DBViewer{}).Distinct("group_id").Where("token IN ?", tokens).Order("group_id").Pluck("group_id", &ids).Error
 	return ids, err
 }
 

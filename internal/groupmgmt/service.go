@@ -164,7 +164,7 @@ func (s *Service) CreateGroup(ctx context.Context, caller Caller, id, displayNam
 	}
 	managerTokens := make([]string, 0, len(managers))
 	for _, m := range managers {
-		token, err := s.checkManagerToken(ctx, m)
+		token, err := s.checkHolderToken(ctx, m, "manager")
 		if err != nil {
 			return nil, err
 		}
@@ -336,7 +336,7 @@ func (s *Service) UpdateGroup(ctx context.Context, caller Caller, token, display
 	return &s.withSourceNames(ctx, []common.Group{*updated})[0], nil
 }
 
-// DeleteGroup deletes a group of the local source, with its members, its memberships in other groups and its managers. Admins only: other groups and every consumer's rules may name it.
+// DeleteGroup deletes a group of the local source, with its members, its memberships in other groups, its managers and its viewers. Admins only: other groups and every consumer's rules may name it.
 func (s *Service) DeleteGroup(ctx context.Context, caller Caller, token string) error {
 	ctx, cancel := s.ctx(ctx)
 	defer cancel()
@@ -564,22 +564,27 @@ func (s *Service) GetAllMembers(ctx context.Context, groupToken, relation string
 	return s.store.GetDirectMembers(ctx, groupID, relation)
 }
 
-// GroupDetail is a group as the people maintaining it see it.
+// GroupDetail is a group as the people maintaining or viewing it see it.
 type GroupDetail struct {
 	Group       common.Group        `json:"group"`
 	Memberships []common.Membership `json:"memberships"`
 	Managers    []common.Manager    `json:"managers"`
+	Viewers     []common.Viewer     `json:"viewers"`
 	// Editable: a local group the caller maintains; a group of a sync source is shown to admins read-only.
 	Editable bool `json:"editable"`
+	// ViewOnly: the caller may only look at the group's members — as its viewer, or as manager or viewer of a group it is nested in —, not change it or read its history.
+	ViewOnly bool `json:"view_only"`
+	// ViewersEditable: the caller may add and remove the group's viewers — its managers for a local group, admins for every group, a sync source's too.
+	ViewersEditable bool `json:"viewers_editable"`
 	// MayDelete: the caller may delete the group (admins, local groups).
 	MayDelete bool `json:"may_delete"`
 }
 
-// Detail returns a group with its direct entries and its managers: one the caller maintains, or for an admin any group, a sync source's read-only.
+// Detail returns a group with its direct entries, its managers and its viewers: one the caller maintains or may look at (see readableGroup), or for an admin any group, a sync source's read-only.
 func (s *Service) Detail(ctx context.Context, caller Caller, groupToken string) (*GroupDetail, error) {
 	ctx, cancel := s.ctx(ctx)
 	defer cancel()
-	g, err := s.readableGroup(ctx, caller, groupToken)
+	g, maintains, err := s.readableGroup(ctx, caller, groupToken)
 	if err != nil {
 		return nil, err
 	}
@@ -591,6 +596,10 @@ func (s *Service) Detail(ctx context.Context, caller Caller, groupToken string) 
 	if err != nil {
 		return nil, err
 	}
+	viewers, err := s.store.ListViewers(ctx, g.ID)
+	if err != nil {
+		return nil, err
+	}
 	// Empty lists, not null: the UI reads their length, and a group nobody maintains (every group of a sync source) answered "managers": null and crashed its detail page.
 	if memberships == nil {
 		memberships = []common.Membership{}
@@ -598,12 +607,19 @@ func (s *Service) Detail(ctx context.Context, caller Caller, groupToken string) 
 	if managers == nil {
 		managers = []common.Manager{}
 	}
+	if viewers == nil {
+		viewers = []common.Viewer{}
+	}
 	return &GroupDetail{
 		Group:       s.withSourceNames(ctx, []common.Group{*g})[0],
 		Memberships: memberships,
 		Managers:    managers,
-		Editable:    s.isLocal(g),
-		MayDelete:   caller.Admin && s.isLocal(g),
+		Viewers:     viewers,
+		Editable:    maintains && s.isLocal(g),
+		ViewOnly:    !maintains,
+		// For a non-admin, maintaining implies a local group; an admin sets viewers on every group.
+		ViewersEditable: maintains,
+		MayDelete:       caller.Admin && s.isLocal(g),
 	}, nil
 }
 
@@ -611,7 +627,7 @@ func (s *Service) Detail(ctx context.Context, caller Caller, groupToken string) 
 func (s *Service) EffectiveMembers(ctx context.Context, caller Caller, groupToken string) ([]string, error) {
 	ctx, cancel := s.ctx(ctx)
 	defer cancel()
-	g, err := s.readableGroup(ctx, caller, groupToken)
+	g, _, err := s.readableGroup(ctx, caller, groupToken)
 	if err != nil {
 		return nil, err
 	}
@@ -628,21 +644,24 @@ func (s *Service) EffectiveMembers(ctx context.Context, caller Caller, groupToke
 	return users, nil
 }
 
-// History returns the most recent changes of a group the caller may look at (see Detail).
+// History returns the most recent changes of a group the caller maintains, or for an admin of any group. A viewer may look at the members as they are, not at who changed what.
 func (s *Service) History(ctx context.Context, caller Caller, groupToken string, limit int) ([]common.Change, error) {
 	ctx, cancel := s.ctx(ctx)
 	defer cancel()
-	g, err := s.readableGroup(ctx, caller, groupToken)
+	g, maintains, err := s.readableGroup(ctx, caller, groupToken)
 	if err != nil {
 		return nil, err
+	}
+	if !maintains {
+		return nil, fmt.Errorf("%w: the history of group '%s' is for the people who maintain it", ErrForbidden, g.ID)
 	}
 	return s.store.ListChanges(ctx, g.ID, limit)
 }
 
 // ── Managers ──────────────────────────────────────────────────────────────────
 
-// checkManagerToken normalizes a manager token and checks it names a person or an existing group, optionally with a configured relation.
-func (s *Service) checkManagerToken(ctx context.Context, token string) (string, error) {
+// checkHolderToken normalizes the token of a manager or viewer ("what", for the error) and checks it names a person or an existing group, optionally with a configured relation.
+func (s *Service) checkHolderToken(ctx context.Context, token, what string) (string, error) {
 	typ, id, err := parseMemberToken(token)
 	if err != nil {
 		return "", err
@@ -663,7 +682,7 @@ func (s *Service) checkManagerToken(ctx context.Context, token string) (string, 
 		}
 		return common.GroupToken(group, relation), nil
 	default:
-		return "", fmt.Errorf("%w: a manager is a person (user:<email>) or a group (group:<id>, group:<id>#<relation>)", common.ErrInvalidID)
+		return "", fmt.Errorf("%w: a %s is a person (user:<email>) or a group (group:<id>, group:<id>#<relation>)", common.ErrInvalidID, what)
 	}
 }
 
@@ -675,7 +694,7 @@ func (s *Service) AddManager(ctx context.Context, caller Caller, groupToken, man
 	if err != nil {
 		return err
 	}
-	token, err := s.checkManagerToken(ctx, managerToken)
+	token, err := s.checkHolderToken(ctx, managerToken, "manager")
 	if err != nil {
 		return err
 	}
@@ -694,14 +713,76 @@ func (s *Service) RemoveManager(ctx context.Context, caller Caller, groupToken, 
 	if err != nil {
 		return err
 	}
-	token := strings.TrimSpace(managerToken)
-	if t, id := common.ParseToken(token); t != "" {
-		token = common.BuildToken(t, common.NormalizeID(id))
-	}
+	token := normalizeHolderToken(managerToken)
 	if err := s.store.RemoveManager(ctx, g.ID, token); err != nil {
 		return err
 	}
 	s.record(ctx, caller, common.Change{GroupID: g.ID, Action: common.ChangeManagerRemoved, Member: token})
+	return nil
+}
+
+// normalizeHolderToken is a manager or viewer token as stored, for removing it: no check, an entry stored before a rule changed must stay removable.
+func normalizeHolderToken(raw string) string {
+	token := strings.TrimSpace(raw)
+	if t, id := common.ParseToken(token); t != "" {
+		token = common.BuildToken(t, common.NormalizeID(id))
+	}
+	return token
+}
+
+// ── Viewers ───────────────────────────────────────────────────────────────────
+
+// viewersGroup returns a group whose viewers the caller may change: a local group they maintain (see localGroup), or for an admin any group, a sync source's too. A sync never writes viewers, so they can be set on its groups — on a course group a sync brings, say — without the next run sweeping them away; those groups have no managers, so only admins set them there.
+func (s *Service) viewersGroup(ctx context.Context, caller Caller, token string) (*common.Group, error) {
+	_, id, err := parseGroupToken(token)
+	if err != nil {
+		return nil, err
+	}
+	g, err := s.getGroup(ctx, id, token)
+	if err != nil {
+		return nil, err
+	}
+	if s.isLocal(g) {
+		return s.localGroup(ctx, caller, token)
+	}
+	if !caller.Admin {
+		return nil, fmt.Errorf("%w: only admins set the viewers of group '%s', which a sync source maintains", ErrForbidden, token)
+	}
+	return g, nil
+}
+
+// AddViewer lets a person or group look at the members of a group, and at those of every group nested in it: a local group the caller maintains — who may change the managers may change the viewers —, or for an admin any group.
+func (s *Service) AddViewer(ctx context.Context, caller Caller, groupToken, viewerToken string) error {
+	ctx, cancel := s.ctx(ctx)
+	defer cancel()
+	g, err := s.viewersGroup(ctx, caller, groupToken)
+	if err != nil {
+		return err
+	}
+	token, err := s.checkHolderToken(ctx, viewerToken, "viewer")
+	if err != nil {
+		return err
+	}
+	if err := s.store.AddViewer(ctx, g.ID, common.Viewer{Token: token, CreatedBy: caller.Actor}); err != nil {
+		return err
+	}
+	s.record(ctx, caller, common.Change{GroupID: g.ID, Action: common.ChangeViewerAdded, Member: token})
+	return nil
+}
+
+// RemoveViewer takes the right to look at a group's members away from a token (who may do so: see AddViewer).
+func (s *Service) RemoveViewer(ctx context.Context, caller Caller, groupToken, viewerToken string) error {
+	ctx, cancel := s.ctx(ctx)
+	defer cancel()
+	g, err := s.viewersGroup(ctx, caller, groupToken)
+	if err != nil {
+		return err
+	}
+	token := normalizeHolderToken(viewerToken)
+	if err := s.store.RemoveViewer(ctx, g.ID, token); err != nil {
+		return err
+	}
+	s.record(ctx, caller, common.Change{GroupID: g.ID, Action: common.ChangeViewerRemoved, Member: token})
 	return nil
 }
 

@@ -171,6 +171,115 @@ func TestManageAsManagerAdminAndOnBehalf(t *testing.T) {
 	}
 }
 
+// Viewers are added and removed by the group's managers over /v1/manage, and a viewer reads the group and its members there — read-only, without its history and without changing anything.
+func TestManageViewers(t *testing.T) {
+	s := newManageServer(t)
+
+	if w := s.as(http.MethodPost, "/v1/manage/groups/wwi23seb/viewers", "id-dekan@x", "", `{"viewer":"user:Sekretariat@x"}`); w.Code != http.StatusNoContent {
+		t.Fatalf("dekan adds a viewer: %d %s", w.Code, w.Body)
+	}
+	if w := s.as(http.MethodPost, "/v1/manage/groups/wwi23seb/viewers", "id-dekan@x", "", `{}`); w.Code != http.StatusBadRequest {
+		t.Errorf("a viewer without a token: %d %s", w.Code, w.Body)
+	}
+	if w := s.as(http.MethodPost, "/v1/manage/groups/other/viewers", "id-dekan@x", "", `{"viewer":"user:a@x"}`); w.Code != http.StatusForbidden {
+		t.Errorf("dekan adds a viewer to a group they do not maintain: %d %s", w.Code, w.Body)
+	}
+	if w := s.as(http.MethodPost, "/v1/manage/groups/wwi23seb/members", "id-dekan@x", "", `{"member":"user:anna@x"}`); w.Code != http.StatusNoContent {
+		t.Fatalf("dekan adds a member: %d %s", w.Code, w.Body)
+	}
+
+	var me manageMeResponse
+	w := s.as(http.MethodGet, "/v1/manage/me", "id-sekretariat@x", "", "")
+	if err := json.Unmarshal(w.Body.Bytes(), &me); err != nil || me.ManagesAny || !me.ViewsAny {
+		t.Errorf("viewer /me: %s", w.Body)
+	}
+	var groups groupmgmt.GroupPage
+	w = s.as(http.MethodGet, "/v1/manage/groups", "id-sekretariat@x", "", "")
+	if err := json.Unmarshal(w.Body.Bytes(), &groups); err != nil || groups.Total != 1 || groups.Items[0].ID != "wwi23seb" || groups.Items[0].Editable {
+		t.Errorf("viewer's groups: %s", w.Body)
+	}
+	var detail groupmgmt.GroupDetail
+	w = s.as(http.MethodGet, "/v1/manage/groups/wwi23seb", "id-sekretariat@x", "", "")
+	if err := json.Unmarshal(w.Body.Bytes(), &detail); err != nil || detail.Editable || !detail.ViewOnly || len(detail.Memberships) != 1 || len(detail.Viewers) != 1 || detail.Viewers[0].Token != "user:sekretariat@x" || detail.Viewers[0].CreatedBy != "dekan@x" {
+		t.Errorf("viewer's detail: %s", w.Body)
+	}
+	var people []string
+	w = s.as(http.MethodGet, "/v1/manage/groups/wwi23seb/effective", "id-sekretariat@x", "", "")
+	if err := json.Unmarshal(w.Body.Bytes(), &people); err != nil || len(people) != 1 || people[0] != "user:anna@x" {
+		t.Errorf("viewer's effective members: %d %s", w.Code, w.Body)
+	}
+	for _, req := range []struct{ method, path, body string }{
+		{http.MethodGet, "/v1/manage/groups/wwi23seb/history", ""},
+		{http.MethodPost, "/v1/manage/groups/wwi23seb/members", `{"member":"user:b@x"}`},
+		{http.MethodPatch, "/v1/manage/groups/wwi23seb", `{"display_name":"x"}`},
+		{http.MethodPost, "/v1/manage/groups/wwi23seb/viewers", `{"viewer":"user:b@x"}`},
+		{http.MethodGet, "/v1/manage/groups/other", ""},
+		{http.MethodGet, "/v1/manage/principals?q=x", ""},
+	} {
+		if w := s.as(req.method, req.path, "id-sekretariat@x", "", req.body); w.Code != http.StatusForbidden {
+			t.Errorf("viewer %s %s: %d %s", req.method, req.path, w.Code, w.Body)
+		}
+	}
+	// The manager's own detail lists the viewers too, editable.
+	w = s.as(http.MethodGet, "/v1/manage/groups/wwi23seb", "id-dekan@x", "", "")
+	if err := json.Unmarshal(w.Body.Bytes(), &detail); err != nil || !detail.Editable || detail.ViewOnly || len(detail.Viewers) != 1 {
+		t.Errorf("manager's detail: %s", w.Body)
+	}
+
+	if w := s.as(http.MethodDelete, "/v1/manage/groups/wwi23seb/viewers?viewer=user:sekretariat@x", "id-dekan@x", "", ""); w.Code != http.StatusNoContent {
+		t.Errorf("dekan removes the viewer: %d %s", w.Code, w.Body)
+	}
+	if w := s.as(http.MethodGet, "/v1/manage/groups/wwi23seb", "id-sekretariat@x", "", ""); w.Code != http.StatusForbidden {
+		t.Errorf("a former viewer reads: %d %s", w.Code, w.Body)
+	}
+	var history []common.Change
+	w = s.as(http.MethodGet, "/v1/manage/groups/wwi23seb/history", "id-dekan@x", "", "")
+	if err := json.Unmarshal(w.Body.Bytes(), &history); err != nil || len(history) < 2 || history[0].Action != common.ChangeViewerRemoved {
+		t.Errorf("history: %s", w.Body)
+	}
+}
+
+// On a sync source's group the viewers endpoints work for admins, and only for them; members and managers stay refused.
+func TestManageViewersOnSyncedGroup(t *testing.T) {
+	s := newManageServer(t)
+	ctx := context.Background()
+	src := &common.Source{ID: uuid.New(), Name: "dualis", Type: common.SourceTypeCSV}
+	if err := s.store.CreateSource(ctx, src); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.store.ReplaceTuples(ctx, src.ID, []common.TuplePair{{GroupID: "wwi24", MemberType: "user", MemberID: "s@x"}}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	if w := s.as(http.MethodPost, "/v1/manage/groups/wwi24/viewers", "id-dekan@x", "", `{"viewer":"user:v@x"}`); w.Code != http.StatusForbidden {
+		t.Errorf("a non-admin sets a viewer on a synced group: %d %s", w.Code, w.Body)
+	}
+	if w := s.as(http.MethodPost, "/v1/manage/groups/wwi24/viewers", "id-root@x", "", `{"viewer":"user:v@x"}`); w.Code != http.StatusNoContent {
+		t.Fatalf("admin sets a viewer on a synced group: %d %s", w.Code, w.Body)
+	}
+	if w := s.as(http.MethodPost, "/v1/manage/groups/wwi24/managers", "id-root@x", "", `{"manager":"user:v@x"}`); w.Code != http.StatusConflict {
+		t.Errorf("admin sets a manager on a synced group: %d %s", w.Code, w.Body)
+	}
+	var detail groupmgmt.GroupDetail
+	w := s.as(http.MethodGet, "/v1/manage/groups/wwi24", "id-root@x", "", "")
+	if err := json.Unmarshal(w.Body.Bytes(), &detail); err != nil || detail.Editable || !detail.ViewersEditable || len(detail.Viewers) != 1 {
+		t.Errorf("admin's detail: %s", w.Body)
+	}
+	w = s.as(http.MethodGet, "/v1/manage/groups/wwi24", "id-v@x", "", "")
+	if err := json.Unmarshal(w.Body.Bytes(), &detail); err != nil || !detail.ViewOnly || detail.ViewersEditable || len(detail.Memberships) != 1 || len(detail.Viewers) != 1 {
+		t.Errorf("viewer's detail: %s", w.Body)
+	}
+	if w := s.as(http.MethodDelete, "/v1/manage/groups/wwi24/viewers?viewer=user:v@x", "id-v@x", "", ""); w.Code != http.StatusForbidden {
+		t.Errorf("the viewer removes themselves: %d %s", w.Code, w.Body)
+	}
+	if w := s.as(http.MethodDelete, "/v1/manage/groups/wwi24/viewers?viewer=user:v@x", "id-root@x", "", ""); w.Code != http.StatusNoContent {
+		t.Errorf("admin removes the viewer: %d %s", w.Code, w.Body)
+	}
+	if w := s.as(http.MethodGet, "/v1/manage/groups/wwi24", "id-v@x", "", ""); w.Code != http.StatusConflict {
+		t.Errorf("a former viewer reads the synced group: %d %s", w.Code, w.Body)
+	}
+}
+
 // The local source is maintained through the group API, not as a sync source.
 func TestLocalSourceIsNotASyncSource(t *testing.T) {
 	s := newManageServer(t)
