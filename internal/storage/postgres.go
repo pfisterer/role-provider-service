@@ -205,10 +205,9 @@ type PostgresStore struct {
 	log *zap.SugaredLogger
 }
 
+// NewPostgresStore connects to Postgres and migrates it. Postgres is waited for up to a minute, each refused attempt logged as a warning (openDBWithRetry): since the NetworkPolicies a new pod is let through only a moment after it starts, so the first attempts can be refused although nothing is wrong. Wrong credentials or a missing database end it at once.
 func NewPostgresStore(dsn string, log *zap.SugaredLogger) (*PostgresStore, error) {
-	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{
-		Logger: gormlogger.Default.LogMode(gormlogger.Silent),
-	})
+	db, err := openDBWithRetry(context.Background(), dbStartupPolicy, log, postgres.Open(dsn), gormlogger.Default.LogMode(gormlogger.Silent))
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to database: %w", err)
 	}
