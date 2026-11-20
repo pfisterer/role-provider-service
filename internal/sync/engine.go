@@ -5,8 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
-	"os"
 	"slices"
 	"strings"
 	"time"
@@ -53,8 +51,7 @@ func (e *Engine) SetAfterSync(fn func(context.Context)) {
 	e.afterSync = fn
 }
 
-// RunSync executes a full sync for the given source using the provided file content.
-// If content is nil, the source's FilePath is used.
+// RunSync executes a full sync for the given source using the provided file content. A CSV or LDIF source needs content (an upload); only the keycloak source reads its data itself and runs with nil.
 func (e *Engine) RunSync(ctx context.Context, sourceID uuid.UUID, content []byte) error {
 	src, err := e.store.GetSource(ctx, sourceID)
 	if err != nil {
@@ -222,22 +219,12 @@ func (e *Engine) fetchKeycloak(ctx context.Context, content []byte) ([]common.Tu
 	return e.keycloak(ctx)
 }
 
-// parseTuples reads the data (from content bytes or file path) and parses it
-// into tuples plus the group descriptions carried by the source.
+// parseTuples parses the uploaded data into tuples plus the group descriptions carried by the source. The data comes only from an upload: the service reads no files from its own disk, so a source may not make it read e.g. /proc/self/environ. A source that still has a file path from before stored in the database cannot sync from it any more and is refused with this message.
 func (e *Engine) parseTuples(src *common.Source, content []byte) ([]common.TuplePair, map[string]string, error) {
-	var r io.Reader
-	if content != nil {
-		r = bytes.NewReader(content)
-	} else if src.FilePath != "" {
-		f, err := os.Open(src.FilePath)
-		if err != nil {
-			return nil, nil, fmt.Errorf("open file %s: %w", src.FilePath, err)
-		}
-		defer f.Close()
-		r = f
-	} else {
-		return nil, nil, fmt.Errorf("source has neither uploaded content nor a file_path")
+	if content == nil {
+		return nil, nil, fmt.Errorf("source %q takes its data only by upload (POST /v1/sync/sources/%s/upload); reading a file from the service's disk is no longer supported", src.Name, src.ID)
 	}
+	r := bytes.NewReader(content)
 
 	switch src.Type {
 	case common.SourceTypeCSV:

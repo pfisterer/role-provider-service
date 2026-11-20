@@ -65,7 +65,6 @@ type Source struct {
 	// maps "wwi23seb-dozent" to wwi23seb#dozent. A CN that does not match stays
 	// a plain group.
 	GroupRelationRegexp string     `json:"group_relation_regexp,omitempty"`
-	FilePath            string     `json:"file_path,omitempty"`
 	LastSyncedAt        *time.Time `json:"last_synced_at,omitempty"`
 	LastSyncStatus      string     `json:"last_sync_status,omitempty"`
 	CreatedAt           time.Time  `json:"created_at"`

@@ -495,7 +495,6 @@ func (s *MemoryStore) UpdateSource(_ context.Context, upd *common.Source) error 
 	src.Schedule = upd.Schedule
 	src.DNEmailRegexp = upd.DNEmailRegexp
 	src.GroupRelationRegexp = upd.GroupRelationRegexp
-	src.FilePath = upd.FilePath
 	src.ReservedNames = slices.Clone(upd.ReservedNames)
 	src.UpdatedAt = time.Now().UTC()
 	return nil

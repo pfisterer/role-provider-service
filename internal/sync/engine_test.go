@@ -283,3 +283,25 @@ func sortedCopy(in []string) []string {
 	slices.Sort(out)
 	return out
 }
+
+// A CSV source syncs only from an upload; without one it is refused as an import error that says so, and the refusal is logged.
+func TestEngine_CSVWithoutUploadIsRefused(t *testing.T) {
+	ctx := context.Background()
+	store := storage.NewMemoryStore(zap.NewNop().Sugar())
+	relations, err := common.NewRelations(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := &common.Source{ID: uuid.New(), Name: "kurse", Type: common.SourceTypeCSV}
+	if err := store.CreateSource(ctx, src); err != nil {
+		t.Fatal(err)
+	}
+	err = NewEngine(store, relations, zap.NewNop().Sugar()).RunSync(ctx, src.ID, nil)
+	var importErr *ImportError
+	if !errors.As(err, &importErr) || !strings.Contains(err.Error(), "only by upload") {
+		t.Fatalf("err = %v", err)
+	}
+	if logs, _ := store.ListSyncLogs(ctx, src.ID, 1); len(logs) != 1 || !strings.Contains(logs[0].ErrorMessage, "only by upload") {
+		t.Errorf("logs = %+v", logs)
+	}
+}

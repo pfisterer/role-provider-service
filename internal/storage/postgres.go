@@ -37,7 +37,6 @@ type DBSource struct {
 	DNEmailRegexp string    `gorm:"not null;default:''"`
 	// Added with group relations; AutoMigrate adds the column with its default.
 	GroupRelationRegexp string `gorm:"not null;default:''"`
-	FilePath            string `gorm:"not null;default:''"`
 	LastSyncedAt        *time.Time
 	LastSyncStatus      string `gorm:"not null;default:''"`
 	CreatedAt           time.Time
@@ -250,8 +249,25 @@ func NewPostgresStore(dsn string, log *zap.SugaredLogger) (*PostgresStore, error
 		return nil, fmt.Errorf("failed to add id constraints: %w", err)
 	}
 
+	warnLegacyFilePaths(db, log)
+
 	log.Info("PostgreSQL storage initialized and schema migrated")
 	return &PostgresStore{db: db, log: log}, nil
+}
+
+// warnLegacyFilePaths names the sources that still have a file path stored from before uploads were the only way in. The column is left in place, so an older image still starts on this database, but nothing reads it any more: such a source syncs only by upload, and a trigger or a schedule is refused with a message saying so. A database that never had the column, or a failed count, is no reason to stop.
+func warnLegacyFilePaths(db *gorm.DB, log *zap.SugaredLogger) {
+	if !db.Migrator().HasColumn(&DBSource{}, "file_path") {
+		return
+	}
+	var names []string
+	if err := db.Model(&DBSource{}).Where("file_path <> ''").Order("name").Pluck("name", &names).Error; err != nil {
+		log.Warnw("could not check sources for a stored file path", zap.Error(err))
+		return
+	}
+	if len(names) > 0 {
+		log.Warnw("sources with a stored file path: the service no longer reads files from its disk, these sources sync only by upload", "count", len(names), "sources", names)
+	}
 }
 
 func (s *PostgresStore) GroupRelations(ctx context.Context) (map[string][]string, error) {
@@ -702,7 +718,6 @@ func (s *PostgresStore) CreateSource(ctx context.Context, src *common.Source) er
 		Schedule:            src.Schedule,
 		DNEmailRegexp:       src.DNEmailRegexp,
 		GroupRelationRegexp: src.GroupRelationRegexp,
-		FilePath:            src.FilePath,
 		ReservedNames:       strings.Join(src.ReservedNames, ","),
 	}
 	if err := s.db.WithContext(ctx).Create(&row).Error; err != nil {
@@ -740,7 +755,6 @@ func (s *PostgresStore) UpdateSource(ctx context.Context, src *common.Source) er
 			"schedule":              src.Schedule,
 			"dn_email_regexp":       src.DNEmailRegexp,
 			"group_relation_regexp": src.GroupRelationRegexp,
-			"file_path":             src.FilePath,
 			"reserved_names":        strings.Join(src.ReservedNames, ","),
 		}).Error
 }
@@ -773,7 +787,6 @@ func dbSourceToCommon(r *DBSource) *common.Source {
 		Schedule:            r.Schedule,
 		DNEmailRegexp:       r.DNEmailRegexp,
 		GroupRelationRegexp: r.GroupRelationRegexp,
-		FilePath:            r.FilePath,
 		ReservedNames:       splitList(r.ReservedNames),
 		LastSyncedAt:        r.LastSyncedAt,
 		LastSyncStatus:      r.LastSyncStatus,

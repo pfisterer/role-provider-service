@@ -282,3 +282,31 @@ func TestSourceUploadToken(t *testing.T) {
 		t.Errorf("read token upload: %d %s", w.Code, w.Body)
 	}
 }
+
+// The service reads no files from its own disk: a request naming a file path is refused, and a CSV source without an upload has nothing to sync from.
+func TestFilePathIsNotSupported(t *testing.T) {
+	s := newTestServer(t, storage.NewMemoryStore(zap.NewNop().Sugar()), nil)
+	ctx := context.Background()
+
+	w := s.do(http.MethodPost, "/v1/sync/sources", writeToken, "application/json", []byte(`{"name":"kurse","type":"csv","file_path":"/proc/self/environ"}`))
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "file_path") {
+		t.Errorf("create with file_path: %d %s", w.Code, w.Body)
+	}
+	if sources, _ := s.store.ListSources(ctx); len(sources) != 0 {
+		t.Fatalf("a source with a file path was stored: %+v", sources)
+	}
+
+	w = s.do(http.MethodPost, "/v1/sync/sources", writeToken, "application/json", []byte(`{"name":"kurse","type":"csv"}`))
+	if w.Code != http.StatusCreated || strings.Contains(w.Body.String(), "file_path") {
+		t.Fatalf("create: %d %s", w.Code, w.Body)
+	}
+	sources, _ := s.store.ListSources(ctx)
+	id := sources[0].ID.String()
+	if w := s.do(http.MethodPut, "/v1/sync/sources/"+id, writeToken, "application/json", []byte(`{"name":"kurse","file_path":"/etc/passwd"}`)); w.Code != http.StatusBadRequest {
+		t.Errorf("update with file_path: %d %s", w.Code, w.Body)
+	}
+	w = s.do(http.MethodPost, "/v1/sync/sources/"+id+"/trigger", writeToken, "", nil)
+	if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), "upload") {
+		t.Errorf("trigger: %d %s", w.Code, w.Body)
+	}
+}

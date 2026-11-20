@@ -85,7 +85,6 @@ type CommonMembership struct {
 type CommonSource struct {
 	CreatedAt     *string `json:"created_at,omitempty"`
 	DnEmailRegexp *string `json:"dn_email_regexp,omitempty"`
-	FilePath      *string `json:"file_path,omitempty"`
 
 	// GroupRelationRegexp GroupRelationRegexp (LDIF only) turns an LDAP group into a relation on
 	// another group: matched against the CN, its named captures "group" and
@@ -247,7 +246,6 @@ type WebserverCreateGroupRequest struct {
 // WebserverCreateSourceRequest defines model for webserver.createSourceRequest.
 type WebserverCreateSourceRequest struct {
 	DnEmailRegexp *string `json:"dn_email_regexp,omitempty"`
-	FilePath      *string `json:"file_path,omitempty"`
 
 	// GroupRelationRegexp GroupRelationRegexp (LDIF only) maps a group CN onto a relation of another
 	// group via the named captures "group" and "relation".
@@ -303,7 +301,6 @@ type WebserverUpdateGroupRequest struct {
 // WebserverUpdateSourceRequest defines model for webserver.updateSourceRequest.
 type WebserverUpdateSourceRequest struct {
 	DnEmailRegexp *string `json:"dn_email_regexp,omitempty"`
-	FilePath      *string `json:"file_path,omitempty"`
 
 	// GroupRelationRegexp GroupRelationRegexp (LDIF only) maps a group CN onto a relation of another
 	// group via the named captures "group" and "relation".

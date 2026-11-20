@@ -58,18 +58,28 @@ type createSourceRequest struct {
 	Type          string `json:"type" binding:"required"`
 	Schedule      string `json:"schedule"`
 	DNEmailRegexp string `json:"dn_email_regexp"`
-	FilePath      string `json:"file_path"`
 	// GroupRelationRegexp (LDIF only) maps a group CN onto a relation of another
 	// group via the named captures "group" and "relation".
 	GroupRelationRegexp string `json:"group_relation_regexp"`
 	// ReservedNames are globs of the group ids only this source may create ("*" for any run of characters).
 	ReservedNames []string `json:"reserved_names"`
+	// FilePath is not part of the API any more; it is read only to refuse a client that still sends one, rather than ignore it and leave the source without data.
+	FilePath *string `json:"file_path" swaggerignore:"true"`
+}
+
+// refuseFilePath answers 400 when a request still names a file path, and reports whether it did.
+func refuseFilePath(c *gin.Context, filePath *string) bool {
+	if filePath == nil {
+		return false
+	}
+	c.JSON(http.StatusBadRequest, gin.H{"error": "file_path is no longer supported: the service reads no files from its disk; upload the data with POST /v1/sync/sources/{id}/upload"})
+	return true
 }
 
 // createSource godoc
 //
 //	@Summary		Create sync source
-//	@Description	Registers a new sync source. Type must be "csv" or "ldif". An optional cron schedule triggers automatic syncs. Reserved names that match a group of another source are refused (409).
+//	@Description	Registers a new sync source. Type must be "csv" or "ldif"; such a source takes its data by upload (POST /v1/sync/sources/{id}/upload). Reserved names that match a group of another source are refused (409).
 //	@Tags			sync
 //	@Accept			json
 //	@Produce		json
@@ -85,7 +95,7 @@ type createSourceRequest struct {
 func createSource(store storage.Store, scheduler *syncp.Scheduler) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req createSourceRequest
-		if !bindJSON(c, &req) {
+		if !bindJSON(c, &req) || refuseFilePath(c, req.FilePath) {
 			return
 		}
 		typ := strings.ToLower(req.Type)
@@ -110,7 +120,6 @@ func createSource(store storage.Store, scheduler *syncp.Scheduler) gin.HandlerFu
 			Schedule:            req.Schedule,
 			DNEmailRegexp:       req.DNEmailRegexp,
 			GroupRelationRegexp: req.GroupRelationRegexp,
-			FilePath:            req.FilePath,
 			ReservedNames:       reserved,
 		}
 		if err := store.CreateSource(c.Request.Context(), src); err != nil {
@@ -161,18 +170,19 @@ type updateSourceRequest struct {
 	Name          string `json:"name"`
 	Schedule      string `json:"schedule"`
 	DNEmailRegexp string `json:"dn_email_regexp"`
-	FilePath      string `json:"file_path"`
 	// GroupRelationRegexp (LDIF only) maps a group CN onto a relation of another
 	// group via the named captures "group" and "relation".
 	GroupRelationRegexp string `json:"group_relation_regexp"`
 	// ReservedNames are globs of the group ids only this source may create ("*" for any run of characters).
 	ReservedNames []string `json:"reserved_names"`
+	// FilePath is not part of the API any more; it is read only to refuse a client that still sends one, rather than ignore it and leave the source without data.
+	FilePath *string `json:"file_path" swaggerignore:"true"`
 }
 
 // updateSource godoc
 //
 //	@Summary		Update sync source
-//	@Description	Replaces name, schedule, regexps, file path and reserved names of a sync source. The local source is not changed here (409).
+//	@Description	Replaces name, schedule, regexps and reserved names of a sync source. The local source is not changed here (409).
 //	@Tags			sync
 //	@Accept			json
 //	@Produce		json
@@ -195,7 +205,7 @@ func updateSource(store storage.Store, scheduler *syncp.Scheduler) gin.HandlerFu
 			return
 		}
 		var req updateSourceRequest
-		if !bindJSON(c, &req) {
+		if !bindJSON(c, &req) || refuseFilePath(c, req.FilePath) {
 			return
 		}
 		if req.Schedule != "" {
@@ -212,8 +222,8 @@ func updateSource(store storage.Store, scheduler *syncp.Scheduler) gin.HandlerFu
 		if !ok {
 			return
 		}
-		src.Name, src.Schedule, src.DNEmailRegexp, src.GroupRelationRegexp, src.FilePath, src.ReservedNames =
-			req.Name, req.Schedule, req.DNEmailRegexp, req.GroupRelationRegexp, req.FilePath, reserved
+		src.Name, src.Schedule, src.DNEmailRegexp, src.GroupRelationRegexp, src.ReservedNames =
+			req.Name, req.Schedule, req.DNEmailRegexp, req.GroupRelationRegexp, reserved
 		if err := store.UpdateSource(c.Request.Context(), src); err != nil {
 			internalError(c, err)
 			return
@@ -356,8 +366,8 @@ func uploadAndSync(engine *syncp.Engine) gin.HandlerFunc {
 
 // triggerSync godoc
 //
-//	@Summary		Trigger sync from file path
-//	@Description	Triggers a sync for a source that has a FilePath configured, reading from that path on disk.
+//	@Summary		Trigger sync
+//	@Description	Runs a sync of a source that reads its data itself, i.e. the keycloak source. A CSV or LDIF source takes its data only by upload (POST /v1/sync/sources/{id}/upload) and is refused here (422); the service reads no files from its own disk.
 //	@Tags			sync
 //	@Produce		json
 //	@Security		Bearer
