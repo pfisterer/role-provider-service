@@ -143,7 +143,34 @@ func (f *fakeUsers) FindUserByEmail(_ context.Context, email string) (*User, err
 }
 
 func affiliated(email string, values ...string) User {
-	return User{Email: email, Enabled: true, Attributes: map[string][]string{"edu_person_affiliation": values}}
+	return User{Email: email, EmailVerified: true, Enabled: true, Attributes: map[string][]string{"edu_person_affiliation": values}}
+}
+
+// An address Keycloak has not verified may be anybody's: it gets no groups, neither in the full read (counted in the notes) nor in the lookup at sign-in.
+func TestUnverifiedEmailGetsNoGroups(t *testing.T) {
+	ctx := context.Background()
+	store := storage.NewMemoryStore(zap.NewNop().Sugar())
+	unverified := affiliated("claims@x", "staff@dhbw-mannheim.de")
+	unverified.EmailVerified = false
+	users := &fakeUsers{all: []User{affiliated("ok@x", "staff@dhbw-mannheim.de"), unverified}}
+	src := NewSource(users, mustMapping(t), store, zap.NewNop().Sugar())
+	src.SetSourceID(uuid.New())
+	tuples, _, notes, err := src.Fetch(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tp := range tuples {
+		if tp.MemberID == "claims@x" {
+			t.Errorf("an unverified address got %v", tp)
+		}
+	}
+	if !slices.ContainsFunc(notes, func(n string) bool { return strings.Contains(n, "skipped 1 user(s) whose e-mail address is not verified") }) {
+		t.Errorf("notes = %v", notes)
+	}
+	src.EnsureUser(ctx, "claims@x")
+	if toks, _ := store.GetUserTokens(ctx, "claims@x"); slices.ContainsFunc(toks, func(t string) bool { return strings.HasPrefix(t, "group:") }) {
+		t.Errorf("lookup gave an unverified address %v", toks)
+	}
 }
 
 // Someone who signed in after the last full read gets their groups at once,

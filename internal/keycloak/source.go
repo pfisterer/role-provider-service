@@ -81,7 +81,7 @@ func (s *Source) Fetch(ctx context.Context) ([]common.TuplePair, map[string]stri
 	unmapped := newUnmapped()
 	known := make(map[string]bool, len(users))
 	var tuples []common.TuplePair
-	invalid := 0
+	invalid, unverified := 0, 0
 	for _, u := range users {
 		email := common.NormalizeID(u.Email)
 		if email == "" || !u.Enabled {
@@ -90,6 +90,10 @@ func (s *Source) Fetch(ctx context.Context) ([]common.TuplePair, map[string]stri
 		// One account with an odd address must not stop everybody's sync; it is skipped and counted in the notes.
 		if common.ValidateEmail(email) != nil {
 			invalid++
+			continue
+		}
+		if !u.EmailVerified {
+			unverified++
 			continue
 		}
 		known[email] = true
@@ -104,6 +108,9 @@ func (s *Source) Fetch(ctx context.Context) ([]common.TuplePair, map[string]stri
 	notes := unmapped.Notes()
 	if invalid > 0 {
 		notes = append(notes, fmt.Sprintf("skipped %d user(s) whose e-mail address is not a plain address", invalid))
+	}
+	if unverified > 0 {
+		notes = append(notes, fmt.Sprintf("skipped %d user(s) whose e-mail address is not verified in Keycloak", unverified))
 	}
 	if len(notes) > 0 {
 		s.log.Warnw("keycloak sync: attribute values no rule maps", "notes", notes)
@@ -135,6 +142,10 @@ func (s *Source) EnsureUser(ctx context.Context, email string) {
 		return
 	}
 	if u == nil || !u.Enabled {
+		return
+	}
+	if !u.EmailVerified {
+		s.log.Infow("keycloak lookup: e-mail address not verified, no memberships", "email", email)
 		return
 	}
 	tuples := s.mapping.Derive(email, u.Attributes[s.mapping.Attribute], newUnmapped())

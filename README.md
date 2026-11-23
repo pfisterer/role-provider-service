@@ -85,7 +85,7 @@ An **LDIF** source reads entries whose `objectClass` is `groupOfNames`, `groupOf
 
 ### Keycloak
 
-With `KEYCLOAK_REALM_URL` set, the service keeps one source of type `keycloak`, created at startup and read on `KEYCLOAK_SYNC_SCHEDULE` and once right after the start. It reads every enabled user through the admin API with a service account that needs `realm-management/view-users` and nothing else, and turns the values of one attribute, each of the form `<value>@<scope>`, into memberships by the rules in `KEYCLOAK_MAPPING`:
+With `KEYCLOAK_REALM_URL` set, the service keeps one source of type `keycloak`, created at startup and read on `KEYCLOAK_SYNC_SCHEDULE` and once right after the start. It reads every enabled user whose e-mail address Keycloak marks as verified (an unverified address may be anybody's, so it gets no groups; the full read counts such users in the sync log's notes) through the admin API with a service account that needs `realm-management/view-users` and nothing else, and turns the values of one attribute, each of the form `<value>@<scope>`, into memberships by the rules in `KEYCLOAK_MAPPING`:
 
 ```json
 {

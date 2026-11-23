@@ -28,9 +28,11 @@ type Client struct {
 
 // User is what this package needs of a Keycloak user.
 type User struct {
-	Email      string              `json:"email"`
-	Enabled    bool                `json:"enabled"`
-	Attributes map[string][]string `json:"attributes"`
+	Email string `json:"email"`
+	// EmailVerified is Keycloak's flag that the address was confirmed (by the identity provider or by mail). An unconfirmed address may be anybody's, so it gives nobody memberships; the services refuse such a sign-in as well (golib: identity only from a verified e-mail).
+	EmailVerified bool                `json:"emailVerified"`
+	Enabled       bool                `json:"enabled"`
+	Attributes    map[string][]string `json:"attributes"`
 }
 
 // NewClient builds a client for a realm, given as its issuer URL
