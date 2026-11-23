@@ -93,6 +93,13 @@ spec:
                   name: {{ $secretName }}
                   key: api-write-tokens
                   optional: true
+            # Resolve tokens: only the routes the consuming services need (tokens, group and user search, members, relations). Optional key.
+            - name: API_RESOLVE_TOKENS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: api-resolve-tokens
+                  optional: true
             # Upload tokens: each may only upload to its one sync source ("<source>=<token>,…"). Optional key.
             - name: SOURCE_UPLOAD_TOKENS
               valueFrom:

@@ -3,6 +3,7 @@ package app
 import (
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/joho/godotenv"
@@ -30,6 +31,8 @@ type AppConfiguration struct {
 	// sources. Empty means no token can write — writing the group graph means
 	// writing authorization for every consumer, so it is opt-in, not a fallback.
 	APIWriteTokens []string `json:"api_write_tokens"`
+	// APIResolveTokens may call only the read routes the consuming services need — a person's tokens, group and user search, a group's members, the relations — and nothing else (API_RESOLVE_TOKENS). A consumer holding one cannot read sync sources, their logs or how groups are maintained.
+	APIResolveTokens []string `json:"api_resolve_tokens"`
 	// SourceUploadTokens each let their holder upload to one sync source and do nothing else (SOURCE_UPLOAD_TOKENS, "<source>=<token>,…"), for a sync server outside the cluster that should not hold a write token.
 	SourceUploadTokens []webserver.SourceUploadToken `json:"-"`
 	// CORSAllowedOrigins lists the exact browser origins allowed to call this
@@ -110,6 +113,7 @@ func loadAppConfiguration() (AppConfiguration, error) {
 		DevMode:                  envconf.String("API_MODE", "production") == "development",
 		APITokens:                tokens,
 		APIWriteTokens:           envconf.StringSlice("API_WRITE_TOKENS", nil),
+		APIResolveTokens:         envconf.StringSlice("API_RESOLVE_TOKENS", nil),
 		CORSAllowedOrigins:       envconf.StringSlice("CORS_ALLOWED_ORIGINS", nil),
 		ServiceTimeoutSeconds:    envconf.Int("SERVICE_TIMEOUT_SECONDS", 30),
 		MaxResponseLimit:         envconf.Int("MAX_RESPONSE_LIMIT", 50),
@@ -133,7 +137,13 @@ func loadAppConfiguration() (AppConfiguration, error) {
 		AdminTokens: envconf.StringSlice("ADMIN_TOKENS", nil),
 		DevAuthUser: common.NormalizeID(envconf.String("DEV_AUTH_USER", "")),
 	}
-	uploadTokens, err := parseSourceUploadTokens(envconf.StringSlice("SOURCE_UPLOAD_TOKENS", nil), cfg.APITokens, cfg.APIWriteTokens)
+	// A resolve token that is also a read or write token would silently be the wider one, so the narrowing it is configured for would not hold.
+	for _, t := range cfg.APIResolveTokens {
+		if slices.Contains(cfg.APITokens, t) || slices.Contains(cfg.APIWriteTokens, t) {
+			return AppConfiguration{}, fmt.Errorf("API_RESOLVE_TOKENS: a resolve token is also a read or write token")
+		}
+	}
+	uploadTokens, err := parseSourceUploadTokens(envconf.StringSlice("SOURCE_UPLOAD_TOKENS", nil), cfg.APITokens, cfg.APIWriteTokens, cfg.APIResolveTokens)
 	if err != nil {
 		return AppConfiguration{}, fmt.Errorf("SOURCE_UPLOAD_TOKENS: %w", err)
 	}
@@ -163,11 +173,13 @@ func loadAppConfiguration() (AppConfiguration, error) {
 	return cfg, nil
 }
 
-// parseSourceUploadTokens reads "<source>=<token>" entries. A token that is also a read or write token would be both at once, and one shared by two sources would open both, so either is refused.
-func parseSourceUploadTokens(entries, readTokens, writeTokens []string) ([]webserver.SourceUploadToken, error) {
+// parseSourceUploadTokens reads "<source>=<token>" entries. A token that is also a read, write or resolve token would be both at once, and one shared by two sources would open both, so either is refused.
+func parseSourceUploadTokens(entries []string, otherTokens ...[]string) ([]webserver.SourceUploadToken, error) {
 	other := map[string]bool{}
-	for _, t := range append(append([]string{}, readTokens...), writeTokens...) {
-		other[t] = true
+	for _, set := range otherTokens {
+		for _, t := range set {
+			other[t] = true
+		}
 	}
 	seen := map[string]bool{}
 	var out []webserver.SourceUploadToken
@@ -178,7 +190,7 @@ func parseSourceUploadTokens(entries, readTokens, writeTokens []string) ([]webse
 			return nil, fmt.Errorf("entry %d is not <source>=<token>", len(out)+1)
 		}
 		if other[token] {
-			return nil, fmt.Errorf("the token for source %q is also a read or write token", source)
+			return nil, fmt.Errorf("the token for source %q is also a read, write or resolve token", source)
 		}
 		if seen[token] {
 			return nil, fmt.Errorf("the token for source %q is used for another source too", source)

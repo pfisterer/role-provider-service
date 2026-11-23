@@ -25,6 +25,8 @@ type SetupConfig struct {
 	Log            *zap.SugaredLogger
 	APITokens      []string
 	APIWriteTokens []string
+	// APIResolveTokens may call only the read routes the consuming services need (see resolveRoutes).
+	APIResolveTokens []string
 	// SourceUploadTokens may each upload to one sync source and do nothing else.
 	SourceUploadTokens []SourceUploadToken
 	GroupSvc           *groupmgmt.Service
@@ -111,7 +113,7 @@ func SetupRouter(cfg SetupConfig) (*gin.Engine, error) {
 	apiGroup.Use(limitRequestBody())
 
 	// Authentication.
-	apiGroup.Use(BearerAuthMiddleware(cfg.APITokens, cfg.APIWriteTokens, cfg.SourceUploadTokens, cfg.Log))
+	apiGroup.Use(BearerAuthMiddleware(cfg.APITokens, cfg.APIWriteTokens, cfg.APIResolveTokens, cfg.SourceUploadTokens, cfg.Log))
 	// Response bodies here are group memberships: names and mail addresses of
 	// real people. That belongs in a local debug session, never in the cluster's
 	// central log storage — so this middleware exists only in dev mode.

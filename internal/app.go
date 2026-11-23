@@ -160,6 +160,7 @@ func RunApplication() {
 		Log:                log,
 		APITokens:          cfg.APITokens,
 		APIWriteTokens:     cfg.APIWriteTokens,
+		APIResolveTokens:   cfg.APIResolveTokens,
 		SourceUploadTokens: cfg.SourceUploadTokens,
 		GroupSvc:           groupSvc,
 		Store:              store,

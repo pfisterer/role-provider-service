@@ -120,7 +120,17 @@ c, err := roleclient.NewClientWithResponses(baseURL, roleclient.WithHTTPClient(h
 
 Its versions are tags of the form `client/vX.Y.Z`, independent of the service's `vX.Y.Z`: `go get github.com/pfisterer/role-provider-service/client@v0.1.0` resolves the tag `client/v0.1.0`. When the API changes, `make client` regenerates `client/` from the spec this commit produces (swag → swagger2openapi → oapi-codegen); commit it together with the change, tag `client/vX.Y.Z` (a new field or operation is a minor version, anything a consumer has to adapt to is a major one) and push the tag, then bump the consumers. The CI job `go-client` fails when `client/` does not match the spec, and builds, tests and scans the module on its own. The TypeScript client is `make ts-client`.
 
-Authentication is by bearer token on everything under `/v1` (only `/` and `/swagger.json` are open; `/v1/manage` takes an ID token instead), with reads and writes separated: a token from `API_TOKENS` may read, a token from `API_WRITE_TOKENS` may also write, and a read token on a write operation gets `403`. The write list has no fallback — left empty, nobody can write — because whoever writes the group graph writes authorization for every consumer. Consumers that only resolve tokens should be given a read token. A sync server outside the cluster gets an upload token instead (`SOURCE_UPLOAD_TOKENS`, `<source>=<token>`): it may upload to that one source and nothing else, not even read, so losing it neither reveals the graph nor reaches beyond the groups that source owns.
+Authentication is by bearer token on everything under `/v1` (only `/` and `/swagger.json` are open; `/v1/manage` takes an ID token instead), with reads and writes separated: a token from `API_TOKENS` may read, a token from `API_WRITE_TOKENS` may also write, and a read token on a write operation gets `403`. The write list has no fallback — left empty, nobody can write — because whoever writes the group graph writes authorization for every consumer. A read token reads everything under `/v1`, sync sources and their logs and how each group is maintained included; consumers should get a resolve token instead (`API_RESOLVE_TOKENS`), which reaches exactly the routes the consuming services call and answers `403` with that list everywhere else:
+
+| Route | Called by |
+|---|---|
+| `GET /v1/users/{email}/tokens` | dynamic-zones-api, openstack-management-api, llm-management-api (aiaas-management-api) |
+| `GET /v1/groups` (search) | openstack-management-api |
+| `GET /v1/users` (search) | openstack-management-api |
+| `GET /v1/groups/{token}/members` | openstack-management-api (Keystone group reconciler) |
+| `GET /v1/relations` | openstack-management-api |
+
+A resolve token that is also a read or write token refuses the start, since it would silently be the wider one; read and write tokens work as before. A sync server outside the cluster gets an upload token instead (`SOURCE_UPLOAD_TOKENS`, `<source>=<token>`): it may upload to that one source and nothing else, not even read, so losing it neither reveals the graph nor reaches beyond the groups that source owns.
 
 ## Running it locally
 
@@ -154,6 +164,7 @@ DEV_AUTH_USER=root.admin@uni.example ADMIN_TOKENS=group:root_uni GROUP_RELATIONS
 | `API_BIND` | `:8085` | Listen address |
 | `API_TOKENS` | — (required) | Comma-separated bearer tokens allowed to read |
 | `API_WRITE_TOKENS` | — | Comma-separated bearer tokens allowed to write; empty means nobody can write |
+| `API_RESOLVE_TOKENS` | — | Comma-separated bearer tokens allowed only the routes consumers call (tokens, group and user search, a group's members, relations); see API |
 | `SOURCE_UPLOAD_TOKENS` | — | Comma-separated `<source>=<token>` pairs; each token may only upload to the source of that name |
 | `CORS_ALLOWED_ORIGINS` | — | Exact origins allowed for browser access; empty allows none |
 | `TRUSTED_PROXIES` | *(empty)* | Reverse proxies (addresses or CIDRs) whose `X-Forwarded-For` is believed for the client IP in the logs; empty trusts none |
@@ -179,13 +190,13 @@ DEV_AUTH_USER=root.admin@uni.example ADMIN_TOKENS=group:root_uni GROUP_RELATIONS
 
 ## Consumers
 
-[openstack-management-api](https://github.com/pfisterer/openstack-management-api) uses it with `ROLE_PROVIDER=http`, `ROLE_PROVIDER_URL` and a read token in `ROLE_PROVIDER_API_TOKEN`: it resolves the caller's tokens, searches groups and addresses when someone picks who may manage something, and its OpenStack reconciler reads a group's resolved members to keep the matching Keystone group in step. Keep it **internal to the cluster** — no ingress — because it answers questions about people and has no business being reachable from outside. The chart creates an Ingress by default; `ingress.enabled: false` turns it off.
+[openstack-management-api](https://github.com/pfisterer/openstack-management-api) uses it with `ROLE_PROVIDER=http`, `ROLE_PROVIDER_URL` and a read or resolve token in `ROLE_PROVIDER_API_TOKEN`: it resolves the caller's tokens, searches groups and addresses when someone picks who may manage something, and its OpenStack reconciler reads a group's resolved members to keep the matching Keystone group in step. Keep it **internal to the cluster** — no ingress — because it answers questions about people and has no business being reachable from outside. The chart creates an Ingress by default; `ingress.enabled: false` turns it off.
 
 ## Deployment
 
 **Normally deployed as part of [cloud-self-service](https://github.com/pfisterer/cloud-self-service)**, the umbrella chart that composes this service with the other three and pins it by version — and a pinned chart version pins its `appVersion`, which pins the image tag. Installing this chart on its own works, but then nothing keeps it in step with the services it talks to.
 
-A Helm chart lives in [`helm-chart/`](helm-chart) (deployment, service, optional ingress and secret, with a `values.schema.json` that fails a bad values file at install time instead of at runtime). Instead of letting the chart create the secret, `roleProviderService.existingSecret` can name one that provides the keys `db-connection-string`, `api-tokens`, optionally `api-write-tokens` and, with the Keycloak source enabled, `keycloak-client-secret`. Images go to `ghcr.io/pfisterer/role-provider-service`; `X.Y.Z-test.N` is the staging channel, plain semver production.
+A Helm chart lives in [`helm-chart/`](helm-chart) (deployment, service, optional ingress and secret, with a `values.schema.json` that fails a bad values file at install time instead of at runtime). Instead of letting the chart create the secret, `roleProviderService.existingSecret` can name one that provides the keys `db-connection-string`, `api-tokens`, optionally `api-write-tokens`, `api-resolve-tokens` (values `api.resolveTokens`) and `source-upload-tokens` and, with the Keycloak source enabled, `keycloak-client-secret`. Images go to `ghcr.io/pfisterer/role-provider-service`; `X.Y.Z-test.N` is the staging channel, plain semver production.
 
 The chart is published as an OCI artifact on every push to `main` whose version is not published yet — neither a chart nor an image version is ever overwritten. Stable versions additionally get a Git tag and a GitHub release.
 

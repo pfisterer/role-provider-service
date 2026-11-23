@@ -23,9 +23,10 @@ import (
 )
 
 const (
-	readToken   = "read-token"
-	writeToken  = "write-token"
-	uploadToken = "upload-token-dualis"
+	readToken    = "read-token"
+	writeToken   = "write-token"
+	uploadToken  = "upload-token-dualis"
+	resolveToken = "resolve-token"
 )
 
 type testServer struct {
@@ -45,6 +46,7 @@ func newTestServer(t *testing.T, store storage.Store, trustedProxies []string) t
 		Log:                log,
 		APITokens:          []string{readToken},
 		APIWriteTokens:     []string{writeToken},
+		APIResolveTokens:   []string{resolveToken},
 		SourceUploadTokens: []SourceUploadToken{{Source: "dualis", Token: uploadToken}},
 		GroupSvc:           groupmgmt.NewService(store, nil, relations, uuid.New(), 5*time.Second, log),
 		Store:              store,
@@ -308,5 +310,73 @@ func TestFilePathIsNotSupported(t *testing.T) {
 	w = s.do(http.MethodPost, "/v1/sync/sources/"+id+"/trigger", writeToken, "", nil)
 	if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), "upload") {
 		t.Errorf("trigger: %d %s", w.Code, w.Body)
+	}
+}
+
+// A resolve token reaches exactly the routes the consuming services call and gets a 403 naming them everywhere else; read and write tokens keep reaching everything they did.
+func TestResolveToken(t *testing.T) {
+	s := newTestServer(t, storage.NewMemoryStore(zap.NewNop().Sugar()), nil)
+	ctx := context.Background()
+	if w := s.do(http.MethodPost, "/v1/groups", writeToken, "application/json", []byte(`{"id":"kurs"}`)); w.Code != http.StatusCreated {
+		t.Fatalf("create group: %d %s", w.Code, w.Body)
+	}
+	if w := s.do(http.MethodPost, "/v1/groups/group:kurs/members", writeToken, "application/json", []byte(`{"member":"user:anna@dhbw.de"}`)); w.Code != http.StatusNoContent {
+		t.Fatalf("add member: %d %s", w.Code, w.Body)
+	}
+	src := &common.Source{ID: uuid.New(), Name: "kurse", Type: common.SourceTypeCSV}
+	if err := s.store.CreateSource(ctx, src); err != nil {
+		t.Fatal(err)
+	}
+
+	allowed := []string{
+		"/v1/users/anna@dhbw.de/tokens",
+		"/v1/groups?q=kurs",
+		"/v1/groups/group:kurs/members?recursive=true",
+		"/v1/users?q=anna",
+		"/v1/relations",
+	}
+	for _, path := range allowed {
+		if w := s.do(http.MethodGet, path, resolveToken, "", nil); w.Code != http.StatusOK {
+			t.Errorf("GET %s with a resolve token: %d %s", path, w.Code, w.Body)
+		}
+	}
+	if w := s.do(http.MethodGet, "/v1/users/anna@dhbw.de/tokens", resolveToken, "", nil); !strings.Contains(w.Body.String(), "group:kurs") {
+		t.Errorf("tokens: %s", w.Body)
+	}
+
+	refused := []struct{ method, path string }{
+		{http.MethodGet, "/v1/groups/group:kurs"},
+		{http.MethodGet, "/v1/sync/sources"},
+		{http.MethodGet, "/v1/sync/sources/" + src.ID.String()},
+		{http.MethodGet, "/v1/sync/sources/" + src.ID.String() + "/log"},
+		{http.MethodGet, "/v1/admin/stats"},
+		{http.MethodGet, "/v1/admin/health"},
+		{http.MethodPost, "/v1/groups"},
+		{http.MethodPost, "/v1/groups/group:kurs/members"},
+		{http.MethodDelete, "/v1/groups/group:kurs"},
+		{http.MethodPost, "/v1/sync/sources/" + src.ID.String() + "/trigger"},
+		{http.MethodPost, "/v1/sync/sources/" + src.ID.String() + "/upload"},
+	}
+	for _, r := range refused {
+		w := s.do(r.method, r.path, resolveToken, "application/json", []byte(`{"id":"x","member":"user:mallory@dhbw.de"}`))
+		if w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "resolve token") || !strings.Contains(w.Body.String(), "GET /v1/users/{email}/tokens") {
+			t.Errorf("%s %s with a resolve token: %d %s", r.method, r.path, w.Code, w.Body)
+		}
+	}
+	if members, _ := s.store.GetDirectMembers(ctx, "kurs", ""); len(members) != 1 {
+		t.Errorf("a resolve token changed the group: %v", members)
+	}
+
+	// Read and write tokens are unchanged.
+	for _, path := range []string{"/v1/groups/group:kurs", "/v1/sync/sources", "/v1/admin/stats"} {
+		if w := s.do(http.MethodGet, path, readToken, "", nil); w.Code != http.StatusOK {
+			t.Errorf("GET %s with a read token: %d %s", path, w.Code, w.Body)
+		}
+	}
+	if w := s.do(http.MethodPost, "/v1/groups", readToken, "application/json", []byte(`{"id":"x"}`)); w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "only read") {
+		t.Errorf("write with a read token: %d %s", w.Code, w.Body)
+	}
+	if w := s.do(http.MethodGet, "/v1/relations", "resolve-token-wrong", "", nil); w.Code != http.StatusUnauthorized {
+		t.Errorf("unknown token: %d %s", w.Code, w.Body)
 	}
 }

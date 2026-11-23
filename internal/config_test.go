@@ -35,9 +35,32 @@ func TestSourceUploadTokens(t *testing.T) {
 		t.Errorf("got %+v", cfg.SourceUploadTokens)
 	}
 
-	for _, bad := range []string{"dualis", "=upload-1", "dualis=", "dualis=write-token", "dualis=read-token", "a=same,b=same"} {
+	t.Setenv("API_RESOLVE_TOKENS", "resolve-token")
+	for _, bad := range []string{"dualis", "=upload-1", "dualis=", "dualis=write-token", "dualis=read-token", "dualis=resolve-token", "a=same,b=same"} {
 		t.Setenv("SOURCE_UPLOAD_TOKENS", bad)
 		if _, err := loadAppConfiguration(); err == nil || !strings.Contains(err.Error(), "SOURCE_UPLOAD_TOKENS") {
+			t.Errorf("%q: got %v", bad, err)
+		}
+	}
+}
+
+// A resolve token is read from API_RESOLVE_TOKENS and may not double as a read or write token, which would silently widen it.
+func TestResolveTokens(t *testing.T) {
+	t.Setenv("API_TOKENS", "read-token")
+	t.Setenv("API_WRITE_TOKENS", "write-token")
+
+	t.Setenv("API_RESOLVE_TOKENS", "resolve-1, resolve-2")
+	cfg, err := loadAppConfiguration()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.APIResolveTokens) != 2 || cfg.APIResolveTokens[1] != "resolve-2" {
+		t.Errorf("got %+v", cfg.APIResolveTokens)
+	}
+
+	for _, bad := range []string{"read-token", "resolve-1,write-token"} {
+		t.Setenv("API_RESOLVE_TOKENS", bad)
+		if _, err := loadAppConfiguration(); err == nil || !strings.Contains(err.Error(), "API_RESOLVE_TOKENS") {
 			t.Errorf("%q: got %v", bad, err)
 		}
 	}

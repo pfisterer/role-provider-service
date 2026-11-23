@@ -15,7 +15,7 @@ roleProviderService:
   port: 8085
 
   # Name of an existing Secret providing the keys `db-connection-string` and
-  # `api-tokens`. When set, the chart does NOT create its own Secret and the
+  # `api-tokens` (optionally `api-write-tokens`, `api-resolve-tokens`, `source-upload-tokens`). When set, the chart does NOT create its own Secret and the
   # `db.connectionString` / `api.tokens` values below are ignored.
   existingSecret: ""
 
@@ -39,6 +39,8 @@ roleProviderService:
     # one sync source it names and do nothing else, not even read. For sync
     # servers outside the cluster that should not hold a write token.
     sourceUploadTokens: ""
+    # Resolve tokens (comma-separated): may call only what the consuming services need (a person's tokens, group and user search, a group's members, the relations) and nothing else. Give consumers one of these instead of a read token. Empty = none.
+    resolveTokens: ""
     # Browser origins allowed to call /v1 cross-origin. This API is consumed by
     # other services with an API token, so the empty default (no cross-origin
     # access) is the normal setting.

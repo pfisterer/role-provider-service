@@ -18,6 +18,39 @@ const canWriteKey = "roleProviderCanWrite"
 // uploadSourceKey holds the source name of a request that authenticated with an upload token.
 const uploadSourceKey = "roleProviderUploadSource"
 
+// resolveRoute is one route a resolve token may call: Path as gin registers it, Doc as the API documents it.
+type resolveRoute struct {
+	Method, Path, Doc string
+}
+
+// resolveRoutes are exactly the calls the consuming services make (dynamic-zones-api, openstack-management-api, llm-management-api): a person's tokens, the group and user search for pickers, a group's resolved members for openstack-management-api's Keystone reconciler, and the configured relations. Nothing that reveals how the graph is maintained — group details with managers and viewers, sync sources and their logs, statistics — and nothing that writes.
+var resolveRoutes = []resolveRoute{
+	{http.MethodGet, "/v1/users/:email/tokens", "GET /v1/users/{email}/tokens"},
+	{http.MethodGet, "/v1/groups", "GET /v1/groups"},
+	{http.MethodGet, "/v1/groups/:token/members", "GET /v1/groups/{token}/members"},
+	{http.MethodGet, "/v1/users", "GET /v1/users"},
+	{http.MethodGet, "/v1/relations", "GET /v1/relations"},
+}
+
+// resolveRouteAllowed reports whether a resolve token may make this request.
+func resolveRouteAllowed(c *gin.Context) bool {
+	for _, r := range resolveRoutes {
+		if c.Request.Method == r.Method && c.FullPath() == r.Path {
+			return true
+		}
+	}
+	return false
+}
+
+// resolveForbiddenMessage names the routes a resolve token may use, so whoever configured one sees at once why a call is refused.
+func resolveForbiddenMessage() string {
+	docs := make([]string, len(resolveRoutes))
+	for i, r := range resolveRoutes {
+		docs[i] = r.Doc
+	}
+	return "this API token is a resolve token and may only call " + strings.Join(docs, ", ")
+}
+
 // SourceUploadToken lets whoever holds Token replace the memberships of the one source named Source, by upload, and do nothing else.
 type SourceUploadToken struct {
 	Source string
@@ -33,8 +66,10 @@ type SourceUploadToken struct {
 // the operator who feeds the CSV. An empty write-token list therefore does not
 // fall back to "everyone may write": it means nobody may.
 //
+// A resolve token opens only the routes the consuming services call (resolveRoutes), all of them reads; anything else is refused with 403 naming those routes. It is what a consumer should hold instead of a read token, which reads everything under /v1.
+//
 // An upload token (SourceUploadToken) opens exactly the upload route, and requireWriteOrOwnSource narrows that to its own source. Everything else, reads included, is refused: such a token sits on a sync server outside the cluster, and losing it must neither reveal the graph nor reach beyond the one source it feeds.
-func BearerAuthMiddleware(readTokens, writeTokens []string, uploadTokens []SourceUploadToken, log *zap.SugaredLogger) gin.HandlerFunc {
+func BearerAuthMiddleware(readTokens, writeTokens, resolveTokens []string, uploadTokens []SourceUploadToken, log *zap.SugaredLogger) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		auth := c.GetHeader("Authorization")
 		if auth == "" {
@@ -50,6 +85,16 @@ func BearerAuthMiddleware(readTokens, writeTokens []string, uploadTokens []Sourc
 
 		canWrite := setContains(writeTokens, token)
 		if !canWrite && !setContains(readTokens, token) {
+			if setContains(resolveTokens, token) {
+				if !resolveRouteAllowed(c) {
+					log.Warnw("rejected request with a resolve token outside its routes", "remote_addr", c.ClientIP(), "method", c.Request.Method, "path", c.Request.URL.Path)
+					c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": resolveForbiddenMessage()})
+					return
+				}
+				c.Set(canWriteKey, false)
+				c.Next()
+				return
+			}
 			if source, ok := uploadSourceFor(uploadTokens, token); ok {
 				if c.Request.Method != http.MethodPost || c.FullPath() != uploadRoute {
 					log.Warnw("rejected request with an upload token outside its upload", "remote_addr", c.ClientIP(), "path", c.Request.URL.Path, "source", source)

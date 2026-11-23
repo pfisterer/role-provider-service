@@ -149,6 +149,10 @@
             "sourceUploadTokens": {
               "type": "string"
             },
+            "resolveTokens": {
+              "type": "string",
+              "description": "Resolve tokens, comma-separated: may call only the routes the consuming services need (a person's tokens, group and user search, a group's members, the relations). Only used when the chart creates its own Secret."
+            },
             "corsAllowedOrigins": {
               "type": "array",
               "items": {
