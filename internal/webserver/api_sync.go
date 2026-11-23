@@ -79,7 +79,7 @@ func refuseFilePath(c *gin.Context, filePath *string) bool {
 // createSource godoc
 //
 //	@Summary		Create sync source
-//	@Description	Registers a new sync source. Type must be "csv" or "ldif"; such a source takes its data by upload (POST /v1/sync/sources/{id}/upload). Reserved names that match a group of another source are refused (409).
+//	@Description	Registers a new sync source. Type must be "csv" or "ldif"; such a source takes its data only by upload (POST /v1/sync/sources/{id}/upload), so a non-empty schedule is refused (400). Reserved names that match a group of another source are refused (409).
 //	@Tags			sync
 //	@Accept			json
 //	@Produce		json
@@ -103,11 +103,9 @@ func createSource(store storage.Store, scheduler *syncp.Scheduler) gin.HandlerFu
 			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("type must be '%s' or '%s'", common.SourceTypeCSV, common.SourceTypeLDIF)})
 			return
 		}
-		if req.Schedule != "" {
-			if err := syncp.ValidateSchedule(req.Schedule); err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-				return
-			}
+		if err := syncp.CheckSchedule(typ, req.Schedule); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
 		}
 		reserved, ok := reservedNames(c, store, uuid.Nil, req.ReservedNames)
 		if !ok {
@@ -182,7 +180,7 @@ type updateSourceRequest struct {
 // updateSource godoc
 //
 //	@Summary		Update sync source
-//	@Description	Replaces name, schedule, regexps and reserved names of a sync source. The local source is not changed here (409).
+//	@Description	Replaces name, schedule, regexps and reserved names of a sync source. Only the keycloak source takes a schedule; a CSV or LDIF source syncs only by upload, so a non-empty schedule on one is refused (400). The local source is not changed here (409).
 //	@Tags			sync
 //	@Accept			json
 //	@Produce		json
@@ -208,14 +206,12 @@ func updateSource(store storage.Store, scheduler *syncp.Scheduler) gin.HandlerFu
 		if !bindJSON(c, &req) || refuseFilePath(c, req.FilePath) {
 			return
 		}
-		if req.Schedule != "" {
-			if err := syncp.ValidateSchedule(req.Schedule); err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-				return
-			}
-		}
 		src, ok := changeableSource(c, store, id)
 		if !ok {
+			return
+		}
+		if err := syncp.CheckSchedule(src.Type, req.Schedule); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
 		reserved, ok := reservedNames(c, store, id, req.ReservedNames)

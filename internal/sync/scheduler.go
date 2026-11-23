@@ -6,6 +6,7 @@ import (
 	gosync "sync"
 
 	"github.com/google/uuid"
+	"github.com/pfisterer/role-provider-service/internal/common"
 	"github.com/pfisterer/role-provider-service/internal/storage"
 	"github.com/robfig/cron/v3"
 	"go.uber.org/zap"
@@ -30,6 +31,17 @@ func ValidateSchedule(schedule string) error {
 	return nil
 }
 
+// CheckSchedule validates a schedule for a source of the given type. Only the keycloak source reads its data itself; CSV and LDIF sources get theirs only by upload, so a scheduled run of one would have no content and fail every time — such a schedule is refused rather than stored.
+func CheckSchedule(sourceType, schedule string) error {
+	if schedule == "" {
+		return nil
+	}
+	if sourceType != common.SourceTypeKeycloak {
+		return fmt.Errorf("CSV and LDIF sources sync only by upload (POST /v1/sync/sources/{id}/upload), so a schedule has nothing to run; leave schedule empty (only the keycloak source runs on a schedule)")
+	}
+	return ValidateSchedule(schedule)
+}
+
 func NewScheduler(engine *Engine, store storage.Store, log *zap.SugaredLogger) *Scheduler {
 	return &Scheduler{
 		cron:   cron.New(),
@@ -40,13 +52,18 @@ func NewScheduler(engine *Engine, store storage.Store, log *zap.SugaredLogger) *
 	}
 }
 
-// Start loads all sources with a schedule and registers them, then starts the cron runner.
+// Start loads all sources with a schedule and registers them, then starts the cron runner. Only the keycloak source's schedule is registered; see CheckSchedule.
 func (s *Scheduler) Start(ctx context.Context) error {
 	sources, err := s.store.ListSources(ctx)
 	if err != nil {
 		return err
 	}
 	for _, src := range sources {
+		// A schedule stored before uploads became the only way in: it is left in the database, like a stored file path, so an older image still finds it, but never registered, since every run would fail for want of content.
+		if src.Schedule != "" && src.Type != common.SourceTypeKeycloak {
+			s.log.Warnw("stored schedule of a source that syncs only by upload is ignored; clear it with PUT /v1/sync/sources/{id}", "source", src.Name, "source_id", src.ID, "type", src.Type, "schedule", src.Schedule)
+			continue
+		}
 		if src.Schedule != "" {
 			if err := s.Register(src.ID, src.Schedule); err != nil {
 				s.log.Warnw("failed to register cron for source", "source_id", src.ID, "schedule", src.Schedule, zap.Error(err))

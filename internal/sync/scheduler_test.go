@@ -9,6 +9,8 @@ import (
 	"github.com/pfisterer/role-provider-service/internal/common"
 	"github.com/pfisterer/role-provider-service/internal/storage"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
 )
 
 // HTTP handlers register and unregister schedules concurrently; run with -race, this caught the unguarded map.
@@ -71,5 +73,45 @@ func TestScheduler_InvalidSchedule(t *testing.T) {
 	}
 	if _, ok := s.jobs[id]; !ok || len(s.cron.Entries()) != 1 {
 		t.Errorf("the old job is gone: jobs = %v", s.jobs)
+	}
+}
+
+// At startup only the keycloak source's schedule is registered: a CSV or LDIF source with a schedule stored by an older version is named in a warning and left as it is in the database, since every run of it would fail for want of an upload.
+func TestScheduler_StartSkipsUploadSources(t *testing.T) {
+	store := storage.NewMemoryStore(zap.NewNop().Sugar())
+	ctx := context.Background()
+	kc := &common.Source{ID: uuid.New(), Name: "keycloak", Type: common.SourceTypeKeycloak, Schedule: "*/15 * * * *"}
+	csv := &common.Source{ID: uuid.New(), Name: "dualis", Type: common.SourceTypeCSV, Schedule: "0 3 * * *"}
+	ldif := &common.Source{ID: uuid.New(), Name: "ldap", Type: common.SourceTypeLDIF, Schedule: "0 4 * * *"}
+	for _, src := range []*common.Source{kc, csv, ldif} {
+		if err := store.CreateSource(ctx, src); err != nil {
+			t.Fatal(err)
+		}
+	}
+	core, logs := observer.New(zapcore.InfoLevel)
+	log := zap.New(core).Sugar()
+	relations, _ := common.NewRelations(nil)
+	s := NewScheduler(NewEngine(store, relations, log), store, log)
+	if err := s.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer s.Stop()
+
+	s.mu.Lock()
+	_, kcRegistered := s.jobs[kc.ID]
+	jobs := len(s.jobs)
+	s.mu.Unlock()
+	if !kcRegistered || jobs != 1 {
+		t.Errorf("registered %d jobs, keycloak among them: %v", jobs, kcRegistered)
+	}
+	warned := map[any]bool{}
+	for _, e := range logs.FilterLevelExact(zapcore.WarnLevel).All() {
+		warned[e.ContextMap()["source"]] = true
+	}
+	if !warned["dualis"] || !warned["ldap"] || warned["keycloak"] {
+		t.Errorf("warnings for %v", warned)
+	}
+	if got, _ := store.GetSource(ctx, csv.ID); got.Schedule != "0 3 * * *" {
+		t.Errorf("stored schedule changed to %q", got.Schedule)
 	}
 }

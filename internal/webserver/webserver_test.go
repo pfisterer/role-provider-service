@@ -176,11 +176,11 @@ func TestInvalidScheduleIsNotStored(t *testing.T) {
 		t.Fatalf("a source with an invalid schedule was stored: %+v", sources)
 	}
 
-	src := &common.Source{ID: uuid.New(), Name: "kurse", Type: common.SourceTypeCSV, Schedule: "0 3 * * *"}
+	src := &common.Source{ID: uuid.New(), Name: "keycloak", Type: common.SourceTypeKeycloak, Schedule: "0 3 * * *"}
 	if err := s.store.CreateSource(ctx, src); err != nil {
 		t.Fatal(err)
 	}
-	w = s.do(http.MethodPut, "/v1/sync/sources/"+src.ID.String(), writeToken, "application/json", []byte(`{"name":"kurse","schedule":"61 * * * *"}`))
+	w = s.do(http.MethodPut, "/v1/sync/sources/"+src.ID.String(), writeToken, "application/json", []byte(`{"name":"keycloak","schedule":"61 * * * *"}`))
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("update: %d %s", w.Code, w.Body)
 	}
@@ -188,9 +188,45 @@ func TestInvalidScheduleIsNotStored(t *testing.T) {
 		t.Errorf("schedule changed to %q", got.Schedule)
 	}
 
-	w = s.do(http.MethodPut, "/v1/sync/sources/"+src.ID.String(), writeToken, "application/json", []byte(`{"name":"kurse","schedule":"*/5 * * * *"}`))
+	w = s.do(http.MethodPut, "/v1/sync/sources/"+src.ID.String(), writeToken, "application/json", []byte(`{"name":"keycloak","schedule":"*/5 * * * *"}`))
 	if w.Code != http.StatusOK {
 		t.Errorf("valid update: %d %s", w.Code, w.Body)
+	}
+}
+
+// A CSV or LDIF source gets data only by upload, so a schedule on it could only fail: it is refused with a message that says how such a source syncs, on create and on update, and an empty schedule still clears one.
+func TestScheduleOnlyForKeycloak(t *testing.T) {
+	s := newTestServer(t, storage.NewMemoryStore(zap.NewNop().Sugar()), nil)
+	ctx := context.Background()
+
+	for _, typ := range []string{"csv", "ldif"} {
+		w := s.do(http.MethodPost, "/v1/sync/sources", writeToken, "application/json", []byte(`{"name":"kurse","type":"`+typ+`","schedule":"0 3 * * *"}`))
+		if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "only by upload") || !strings.Contains(w.Body.String(), "/upload") {
+			t.Errorf("create %s with a schedule: %d %s", typ, w.Code, w.Body)
+		}
+	}
+	if sources, _ := s.store.ListSources(ctx); len(sources) != 0 {
+		t.Fatalf("a source with a schedule was stored: %+v", sources)
+	}
+
+	// Stored before the rule, as a source from an older version may be.
+	src := &common.Source{ID: uuid.New(), Name: "kurse", Type: common.SourceTypeCSV, Schedule: "0 3 * * *"}
+	if err := s.store.CreateSource(ctx, src); err != nil {
+		t.Fatal(err)
+	}
+	w := s.do(http.MethodPut, "/v1/sync/sources/"+src.ID.String(), writeToken, "application/json", []byte(`{"name":"kurse","schedule":"*/5 * * * *"}`))
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "only by upload") {
+		t.Errorf("update with a schedule: %d %s", w.Code, w.Body)
+	}
+	if got, _ := s.store.GetSource(ctx, src.ID); got.Schedule != "0 3 * * *" {
+		t.Errorf("schedule changed to %q", got.Schedule)
+	}
+	w = s.do(http.MethodPut, "/v1/sync/sources/"+src.ID.String(), writeToken, "application/json", []byte(`{"name":"kurse"}`))
+	if w.Code != http.StatusOK {
+		t.Errorf("clearing the schedule: %d %s", w.Code, w.Body)
+	}
+	if got, _ := s.store.GetSource(ctx, src.ID); got.Schedule != "" {
+		t.Errorf("schedule not cleared: %q", got.Schedule)
 	}
 }
 
