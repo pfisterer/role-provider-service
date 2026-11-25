@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -424,5 +425,52 @@ func TestDetailListsAreNeverNull(t *testing.T) {
 	b, _ := json.Marshal(d)
 	if !strings.Contains(string(b), `"managers":[]`) || !strings.Contains(string(b), `"memberships":[]`) {
 		t.Errorf("empty lists are not [] in %s", b)
+	}
+}
+
+// The people-facing search finds nothing below MinPrincipalQuery characters and never more than MaxPrincipalResults per kind, whatever limit is asked for, so the directory cannot be read out piece by piece.
+func TestSearchPrincipalsIsBounded(t *testing.T) {
+	ctx := context.Background()
+	svc, _ := newTestService(t)
+	for i := 1; i <= 15; i++ {
+		id := fmt.Sprintf("kurs-%02d", i)
+		if _, err := svc.CreateGroup(ctx, admin, id, "", "", nil); err != nil {
+			t.Fatal(err)
+		}
+		if err := svc.AddMember(ctx, admin, "group:kurs-01", "", fmt.Sprintf("user:student%02d@example.org", i), nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, q := range []string{"", "k", "ku", "  ku  ", "st"} {
+		p, err := svc.SearchPrincipals(ctx, admin, q, 50)
+		if err != nil {
+			t.Fatalf("q=%q: %v", q, err)
+		}
+		if len(p.Groups) != 0 || len(p.Users) != 0 {
+			t.Errorf("q=%q found %d groups and %d people, want nothing below %d characters", q, len(p.Groups), len(p.Users), MinPrincipalQuery)
+		}
+	}
+	for _, limit := range []int{0, 10, 50, 1000} {
+		p, err := svc.SearchPrincipals(ctx, admin, "kurs", limit)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(p.Groups) != MaxPrincipalResults {
+			t.Errorf("limit %d: %d groups, want %d", limit, len(p.Groups), MaxPrincipalResults)
+		}
+		u, err := svc.SearchPrincipals(ctx, admin, "student", limit)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(u.Users) != MaxPrincipalResults {
+			t.Errorf("limit %d: %d people, want %d", limit, len(u.Users), MaxPrincipalResults)
+		}
+	}
+	if p, err := svc.SearchPrincipals(ctx, admin, "student03", 5); err != nil || len(p.Users) != 1 {
+		t.Errorf("an exact address finds one person: %v, %v", p, err)
+	}
+	// A short query from somebody who may not search at all is still refused, not quietly answered empty.
+	if _, err := svc.SearchPrincipals(ctx, person("e@example.org"), "x", 10); !errors.Is(err, ErrForbidden) {
+		t.Errorf("somebody maintaining nothing searched: %v", err)
 	}
 }

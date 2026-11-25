@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -311,5 +312,27 @@ func TestManageRefusesCrossOriginWrites(t *testing.T) {
 	s.router.ServeHTTP(w, req)
 	if w.Code != http.StatusForbidden {
 		t.Errorf("cross-origin write: %d %s", w.Code, w.Body)
+	}
+}
+
+// /v1/manage/principals answers a query under three characters with nothing, and caps every kind at ten entries whatever limit is asked for.
+func TestManageSearchPrincipalsIsBounded(t *testing.T) {
+	s := newManageServer(t)
+	for i := 1; i <= 12; i++ {
+		body := fmt.Sprintf(`{"id":"suchkurs-%02d"}`, i)
+		if w := s.do(http.MethodPost, "/v1/groups", writeToken, "application/json", []byte(body)); w.Code != http.StatusCreated {
+			t.Fatalf("create group: %d %s", w.Code, w.Body)
+		}
+	}
+	var p groupmgmt.Principals
+	for _, q := range []string{"su", "s", "%20su%20"} {
+		w := s.as(http.MethodGet, "/v1/manage/principals?limit=500&q="+q, "id-root@x", "", "")
+		if err := json.Unmarshal(w.Body.Bytes(), &p); w.Code != http.StatusOK || err != nil || len(p.Groups) != 0 || len(p.Users) != 0 {
+			t.Errorf("q=%q: %d %s", q, w.Code, w.Body)
+		}
+	}
+	w := s.as(http.MethodGet, "/v1/manage/principals?limit=500&q=suchkurs", "id-root@x", "", "")
+	if err := json.Unmarshal(w.Body.Bytes(), &p); w.Code != http.StatusOK || err != nil || len(p.Groups) != 10 {
+		t.Errorf("q=suchkurs limit=500: %d groups, %d %s", len(p.Groups), w.Code, w.Body)
 	}
 }

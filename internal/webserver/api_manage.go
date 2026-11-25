@@ -98,12 +98,12 @@ func manageMe(svc *groupmgmt.Service, sourceName string) gin.HandlerFunc {
 // manageSearchPrincipals godoc
 //
 //	@Summary		Search groups and people
-//	@Description	What a member or manager field may be filled with: groups of every source, each relation as an entry of its own, and e-mail addresses — those only for a non-empty query, the directory is not browsable. For people who maintain a group.
+//	@Description	What a member or manager field may be filled with: groups of every source, each relation as an entry of its own, and e-mail addresses. Only a query of at least 3 characters (after trimming) finds anything, and each kind returns at most 10 entries; a larger limit is reduced to 10, not refused. The directory is not browsable. For people who maintain a group.
 //	@Tags			manage
 //	@Produce		json
 //	@Security		Bearer
 //	@Param			q		query		string	false	"Search query"
-//	@Param			limit	query		int		false	"Maximum entries per kind"	default(50)
+//	@Param			limit	query		int		false	"Maximum entries per kind (at most 10)"	default(10)
 //	@Success		200		{object}	groupmgmt.Principals
 //	@Failure		401		{object}	map[string]any	"Not signed in"
 //	@Failure		403		{object}	map[string]any	"Maintains no group"
@@ -111,8 +111,8 @@ func manageMe(svc *groupmgmt.Service, sourceName string) gin.HandlerFunc {
 //	@Router			/v1/manage/principals [get]
 func manageSearchPrincipals(svc *groupmgmt.Service, maxLimit int) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		limit := maxLimit
-		if n, err := strconv.Atoi(c.Query("limit")); err == nil && n > 0 && n < maxLimit {
+		limit := min(maxLimit, groupmgmt.MaxPrincipalResults)
+		if n, err := strconv.Atoi(c.Query("limit")); err == nil && n > 0 && n < limit {
 			limit = n
 		}
 		p, err := svc.SearchPrincipals(c.Request.Context(), callerOf(c), c.Query("q"), limit)

@@ -794,7 +794,13 @@ type Principals struct {
 	Users  []string       `json:"users"`
 }
 
-// SearchPrincipals searches groups of every source (each relation as an entry of its own) and addresses, the latter only once the query is not empty — the directory is not browsable. For people who maintain at least one group, or admins.
+// MinPrincipalQuery and MaxPrincipalResults bound the people-facing search (SearchPrincipals, /v1/manage/principals): a query shorter than MinPrincipalQuery characters finds nothing and does not reach the directory, and no kind returns more than MaxPrincipalResults entries, whatever limit the caller asks for. Together they keep the directory from being read out piece by piece through the search box. The service routes (/v1/users, /v1/groups) are for API tokens only and keep their own limits.
+const (
+	MinPrincipalQuery   = 3
+	MaxPrincipalResults = 10
+)
+
+// SearchPrincipals searches groups of every source (each relation as an entry of its own) and addresses, both only for a query of at least MinPrincipalQuery characters and at most MaxPrincipalResults per kind — the directory is not browsable. For people who maintain at least one group, or admins; the permission is checked before the query, so a short query from someone without it is still refused.
 func (s *Service) SearchPrincipals(ctx context.Context, caller Caller, query string, limit int) (*Principals, error) {
 	ctx, cancel := s.ctx(ctx)
 	defer cancel()
@@ -807,6 +813,13 @@ func (s *Service) SearchPrincipals(ctx context.Context, caller Caller, query str
 			return nil, fmt.Errorf("%w: searching is for people who maintain a group", ErrForbidden)
 		}
 	}
+	query = strings.TrimSpace(query)
+	if len([]rune(query)) < MinPrincipalQuery {
+		return &Principals{Groups: []common.Group{}, Users: []string{}}, nil
+	}
+	if limit <= 0 || limit > MaxPrincipalResults {
+		limit = MaxPrincipalResults
+	}
 	var groups []common.Group
 	if s.cache != nil {
 		groups = s.cache.Search(query, limit)
@@ -817,12 +830,12 @@ func (s *Service) SearchPrincipals(ctx context.Context, caller Caller, query str
 		}
 		groups = s.withSourceNames(ctx, groups)
 	}
-	users := []string{}
-	if strings.TrimSpace(query) != "" {
-		var err error
-		if users, err = s.store.SearchUsers(ctx, query, limit); err != nil {
-			return nil, err
-		}
+	users, err := s.store.SearchUsers(ctx, query, limit)
+	if err != nil {
+		return nil, err
+	}
+	if users == nil {
+		users = []string{}
 	}
 	if groups == nil {
 		groups = []common.Group{}
