@@ -392,7 +392,7 @@ type ManageSearchPrincipalsParams struct {
 	// Q Search query
 	Q *string `form:"q,omitempty" json:"q,omitempty"`
 
-	// Limit Maximum entries per kind
+	// Limit Maximum entries per kind (at most 10)
 	Limit *int `form:"limit,omitempty" json:"limit,omitempty"`
 }
 
