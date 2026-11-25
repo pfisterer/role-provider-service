@@ -80,7 +80,7 @@ func SetupRouter(cfg SetupConfig) (*gin.Engine, error) {
 	})
 	router.GET("/", func(c *gin.Context) {
 		c.Header("Content-Type", "text/html; charset=utf-8")
-		c.String(http.StatusOK, strings.ReplaceAll(indexHTML, "__VERSION__", generated_docs.Version))
+		c.String(http.StatusOK, strings.ReplaceAll(indexHTML, "__VERSION__", appVersion))
 	})
 
 	// People maintaining groups, through the self-service UI: an ID token instead of an API token, and nothing but /v1/manage. Registered as a group of its own, so the API-token middleware below never sees these requests and the person middleware never sees the others.
