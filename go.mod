@@ -11,7 +11,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/joho/godotenv v1.5.1
-	github.com/pfisterer/cloud-self-service-golib v0.23.0
+	github.com/pfisterer/cloud-self-service-golib v0.24.0
 	github.com/robfig/cron/v3 v3.0.1
 	go.uber.org/zap v1.28.0
 	gorm.io/driver/postgres v1.6.2

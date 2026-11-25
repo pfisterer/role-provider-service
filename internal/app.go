@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/pfisterer/cloud-self-service-golib/ginweb"
 	"github.com/pfisterer/cloud-self-service-golib/logging"
 	"github.com/pfisterer/cloud-self-service-golib/oidcauth"
 	"github.com/pfisterer/role-provider-service/internal/catalog"
@@ -178,8 +179,9 @@ func RunApplication() {
 		log.Fatalw("http router", zap.Error(err))
 	}
 
+	// An http.Server with timeouts, drained on SIGTERM (ginweb.Serve): a rollout of the one replica answers what is in flight and leaves no gap (25.11.2026 the portal logged "connection refused" during one).
 	log.Infow("Listening", "bind", cfg.GinBindString)
-	if err := router.Run(cfg.GinBindString); err != nil {
+	if err := ginweb.Serve(ginweb.NewServer(cfg.GinBindString, router)); err != nil {
 		log.Fatalw("server stopped", zap.Error(err))
 	}
 }

@@ -2,11 +2,14 @@ package webserver
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
 	"time"
+
+	"gorm.io/gorm"
 
 	ginzap "github.com/gin-contrib/zap"
 	"github.com/gin-gonic/gin"
@@ -72,6 +75,9 @@ func SetupRouter(cfg SetupConfig) (*gin.Engine, error) {
 	gin.DefaultWriter = ginLogWriter
 	gin.DefaultErrorWriter = ginLogWriter
 	router.Use(ginzap.RecoveryWithZap(cfg.Log.Desugar(), true))
+
+	// The probes, without authentication: /healthz (the process serves) and /readyz (the database answers), so a new pod gets traffic only once it can answer and Kubernetes has something to wait for during a rollout.
+	probes(cfg.Store).Mount(router)
 
 	// Documentation routes (unauthenticated).
 	router.GET("/swagger.json", func(c *gin.Context) {
@@ -244,4 +250,20 @@ func debugLoggingMiddleware(log *zap.SugaredLogger) gin.HandlerFunc {
 		}
 		logRequestErrors(c, log)
 	}
+}
+
+// probes are the readiness checks of /readyz: the database, when the store has one (PostgresStore). The identity provider is not checked: API tokens work without it, and the person routes report its errors themselves.
+func probes(store storage.Store) *ginweb.Health {
+	h := &ginweb.Health{}
+	if pg, ok := store.(interface{ DB() *gorm.DB }); ok && pg.DB() != nil {
+		db := pg.DB()
+		h.AddCheck("database", func(ctx context.Context) error {
+			sqlDB, err := db.DB()
+			if err != nil {
+				return err
+			}
+			return sqlDB.PingContext(ctx)
+		})
+	}
+	return h
 }

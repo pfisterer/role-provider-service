@@ -14,6 +14,12 @@ metadata:
     {{- include "role-provider-service.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.roleProviderService.replicas }}
+  # A rollout without a gap: the new pod first, the old one only once the new one is ready (one replica: the defaults would round to the same, stated so it does not depend on rounding).
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
   selector:
     matchLabels:
       {{- include "role-provider-service.selectorLabels" . | nindent 6 }}
@@ -26,6 +32,8 @@ spec:
     spec:
       # This pod never talks to the Kubernetes API — do not hand it a token for it.
       automountServiceAccountToken: false
+      # preStop pause (5 s) + the server's own drain after SIGTERM (20 s, ginweb.ShutdownGrace) fit in here.
+      terminationGracePeriodSeconds: 30
       volumes:
         # Writable scratch so the container rootfs can stay read-only.
         - name: tmp
@@ -41,6 +49,22 @@ spec:
           imagePullPolicy: {{ .Values.roleProviderService.imagePullPolicy | default "Always" }}
           ports:
             - containerPort: {{ .Values.roleProviderService.port }}
+          # Wait before SIGTERM until the pod is out of the Service's endpoints, so no request is still routed to a process that is stopping; then the server answers what is in flight and ends (25.11.2026 the portal logged "connection refused" during a rollout).
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: 5
+          # /healthz: the process serves; /readyz: the database answers. A new pod gets traffic only once it can answer.
+          startupProbe:
+            httpGet: {path: /healthz, port: {{ .Values.roleProviderService.port }}}
+            periodSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            httpGet: {path: /readyz, port: {{ .Values.roleProviderService.port }}}
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /healthz, port: {{ .Values.roleProviderService.port }}}
+            periodSeconds: 20
           # Hardening: non-root, no privilege escalation, no capabilities,
           # read-only rootfs, default seccomp. The image sets USER 65532.
           securityContext:

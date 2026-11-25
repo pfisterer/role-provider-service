@@ -95,8 +95,8 @@ github.com/modern-go/reflect2 v1.0.2 h1:xBagoLtFs94CBntxluKeaWgTMpvLxC4ur3nMaC9G
 github.com/modern-go/reflect2 v1.0.2/go.mod h1:yWuevngMOJpCy52FWWMvUC8ws7m/LJsjYzDa0/r8luk=
 github.com/pelletier/go-toml/v2 v2.4.3 h1:GTRvJQutkOSftxIFD5xw9aepkYNuPWmVJpffdDPYVpY=
 github.com/pelletier/go-toml/v2 v2.4.3/go.mod h1:2gIqNv+qfxSVS7cM2xJQKtLSTLUE9V8t9Stt+h56mCY=
-github.com/pfisterer/cloud-self-service-golib v0.23.0 h1:2eUHhAeH4P8YnonjPNHplAK2kiJxhjmrtxNCI4k2j00=
-github.com/pfisterer/cloud-self-service-golib v0.23.0/go.mod h1:8OrIA3gzGb05q7RydH0U/18Rm6RoOI0cFJyeCF0Ucaw=
+github.com/pfisterer/cloud-self-service-golib v0.24.0 h1:eo+RqB5XYh723CsRRHNBfa83pNdp5/hMp5ym0/i+U6M=
+github.com/pfisterer/cloud-self-service-golib v0.24.0/go.mod h1:1PkwxKiyiftCr22ogAwHHsxZ9MK13sPNlE50oYrRc6E=
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
 github.com/quic-go/go-ossfuzz-seeds v0.1.0 h1:APacT+iIaNF6fd8AGEiN3bT/Jtkd2jz4v4TzM7MFjy0=
 github.com/quic-go/go-ossfuzz-seeds v0.1.0/go.mod h1:3IOHRbJIc+L6YKMwfDtJAM9Vj9k0YY4muhuyUYk5tbk=
