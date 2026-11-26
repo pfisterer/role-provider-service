@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -214,6 +215,11 @@ func accessLoggingMiddleware(log *zap.SugaredLogger) gin.HandlerFunc {
 // logRequestErrors logs the errors a handler attached with c.Error — those whose text the client does not get (see internalError).
 func logRequestErrors(c *gin.Context, log *zap.SugaredLogger) {
 	for _, e := range c.Errors {
+		// A client that hangs up before the answer (closed tab, timeout on its side) cancels the request context; that is not a fault of this service, so it is no error line.
+		if errors.Is(e.Err, context.Canceled) {
+			log.Infow("request canceled by client", "method", c.Request.Method, "path", c.Request.URL.Path, zap.Error(e.Err))
+			continue
+		}
 		log.Errorw("request failed", "method", c.Request.Method, "path", c.Request.URL.Path, "status", c.Writer.Status(), zap.Error(e.Err))
 	}
 }
